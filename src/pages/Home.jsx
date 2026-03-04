@@ -152,7 +152,7 @@ export default function Home() {
       <main className="flex-1 p-10 overflow-y-auto">
         <header className="flex justify-between items-center mb-10 border-b border-gray-300 pb-5">
           <div>
-            <h1 className="text-3xl font-bold text-gray-800">Situacional</h1>
+            <h1 className="text-3xl font-bold text-gray-800">Inicio</h1>
             <p className="text-gray-500 mt-1">
               Resumen general de la campaña en tiempo real
             </p>
