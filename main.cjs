@@ -12,7 +12,11 @@ function createWindow () {
     }
   })
 
-  win.loadURL('http://localhost:5173') 
+  if (app.isPackaged) {
+    win.loadFile(path.join(__dirname, 'dist/index.html'))
+  } else {
+    win.loadURL('http://localhost:5173')
+  }
 
   win.removeMenu()
   
