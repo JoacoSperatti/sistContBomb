@@ -73,7 +73,6 @@ export default function CargarClientes() {
               <option value="${formData.metodoPago || "Efectivo"}">${formData.metodoPago || "Efectivo"}</option>
               <option value="Efectivo">Efectivo</option>
               <option value="Transferencia">Transferencia</option>
-              <option value="Tarjeta">Tarjeta</option>
             </select>
           </div>
         `,
@@ -286,7 +285,6 @@ export default function CargarClientes() {
                       <option value="">Seleccione...</option>
                       <option value="Efectivo">Efectivo</option>
                       <option value="Transferencia">Transferencia</option>
-                      <option value="Tarjeta">Tarjeta</option>
                     </select>
                   </div>
                   <div className="flex items-center gap-2 mt-6 bg-gray-50 p-3 rounded-lg border">

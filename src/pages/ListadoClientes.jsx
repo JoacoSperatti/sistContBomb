@@ -181,7 +181,6 @@ export default function ListadoClientes() {
             <select id="swal-metodo" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
               <option value="Efectivo">Efectivo</option>
               <option value="Transferencia">Transferencia</option>
-              <option value="Tarjeta">Tarjeta</option>
             </select>
           </div>
         `,
