@@ -1,13 +1,5 @@
 cambio: 
 
-en la pantalla princilpal en vez de "precio del bono" que diga "precio de la cuota"
-
-el numero q compra va para todos los meses (puede comprar 1 revista de 1 numero o de más)
-
-si hay un mes que no pago un asterisco en lista de clientes
-
-campo activo/baja
-
 mes abonado no al total (ej 20k de 25k que salga un asterisco)
 
 cliente que paga hibrido (en transferencia y efectivo el mismo mes)

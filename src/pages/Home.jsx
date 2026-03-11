@@ -183,7 +183,7 @@ export default function Home() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-10">
             <div className="bg-white p-6 rounded-2xl shadow-lg border-l-8 border-blue-500 relative">
               <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wide mb-2">
-                Precio del Bono
+                Precio de la cuota
               </h3>
               <p className="text-4xl font-black text-gray-800">
                 ${precioBono.toLocaleString("es-AR")}

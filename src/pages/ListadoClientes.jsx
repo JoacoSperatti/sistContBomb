@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-// Sumamos deleteDoc para poder borrar
 import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { getAuth, onAuthStateChanged } from 'firebase/auth'; 
 import { db } from '../firebase/config';
@@ -13,15 +12,12 @@ export default function ListadoClientes() {
   const [cargando, setCargando] = useState(true);
   const [campanaFiltro, setCampanaFiltro] = useState('2025-2026');
   
-  // ESTADO PARA EL BUSCADOR
   const [busqueda, setBusqueda] = useState('');
 
-  // Estados para Pagos
   const [clienteEditando, setClienteEditando] = useState(null);
   const [pagosTemp, setPagosTemp] = useState({});
   const [guardandoPago, setGuardandoPago] = useState(false);
 
-  // Estados para Editar Info Personal
   const [editandoInfo, setEditandoInfo] = useState(null);
   const [infoTemp, setInfoTemp] = useState({});
 
@@ -32,6 +28,22 @@ export default function ListadoClientes() {
     try {
       const q = query(collection(db, 'socios'), where("campana", "==", campanaFiltro));
       const snapshot = await getDocs(q);
+
+      const hoy = new Date();
+      const anioActual = hoy.getFullYear();
+      const mesActual = hoy.getMonth(); 
+      const indexMesActual = mesActual >= 7 ? mesActual - 7 : mesActual + 5; 
+      
+      const [anioInicio, anioFin] = campanaFiltro.split('-');
+      let maxMesesExigibles = 12; 
+      
+      if (anioActual === Number(anioInicio) && mesActual >= 7) {
+        maxMesesExigibles = indexMesActual + 1;
+      } else if (anioActual === Number(anioFin) && mesActual < 7) {
+        maxMesesExigibles = indexMesActual + 1;
+      } else if (anioActual < Number(anioInicio) || (anioActual === Number(anioInicio) && mesActual < 7)) {
+        maxMesesExigibles = 0; 
+      }
       
       const listaData = snapshot.docs.map(documento => {
         const data = documento.data();
@@ -54,8 +66,29 @@ export default function ListadoClientes() {
             }
           });
         }
-        const nrosAsignados = Array.from(numerosRifaSet).join(', ');
-        return { id: documento.id, ...data, pagos: pagosNormalizados, cuotasPagas, nrosAsignados };
+        
+        const nrosAsignados = data.nrosRifa || Array.from(numerosRifaSet).join(', ');
+
+        let tieneDeuda = false;
+        // Solo revisamos deuda si el cliente está activo
+        if (data.activo !== false) {
+          for (let i = 0; i < maxMesesExigibles; i++) {
+            if (!pagosNormalizados[meses[i]]?.pagado) {
+              tieneDeuda = true;
+              break; 
+            }
+          }
+        }
+
+        return { 
+          id: documento.id, 
+          ...data, 
+          pagos: pagosNormalizados, 
+          cuotasPagas, 
+          nrosAsignados, 
+          tieneDeuda,
+          activo: data.activo !== false // Si no existe el campo, por defecto es true
+        };
       });
 
       listaData.sort((a, b) => {
@@ -81,7 +114,6 @@ export default function ListadoClientes() {
     return () => unsubscribe();
   }, [campanaFiltro, navigate]);
 
-  // --- FUNCIONES DE BÚSQUEDA Y EXPORTACIÓN ---
   const clientesFiltrados = clientes.filter(c => 
     c.cliente.toLowerCase().includes(busqueda.toLowerCase()) || 
     (c.nrosAsignados && c.nrosAsignados.includes(busqueda)) ||
@@ -99,7 +131,8 @@ export default function ListadoClientes() {
       "Teléfono": c.telefono,
       "Vendedor": c.vendedor,
       "¿Es Abonado?": c.esAbonado ? 'Sí' : 'No',
-      "Cuotas Pagas": `${c.cuotasPagas} de 12`
+      "Estado": c.activo ? 'Activo' : 'Baja',
+      "Cuotas Pagas": `${c.cuotasPagas} de 12 ${c.tieneDeuda ? '(* Deuda)' : ''}`
     }));
     const hoja = XLSX.utils.json_to_sheet(datosFormateados);
     const libro = XLSX.utils.book_new();
@@ -107,11 +140,10 @@ export default function ListadoClientes() {
     XLSX.writeFile(libro, `Bomberos_Campaña_${campanaFiltro}.xlsx`);
   };
 
-  // --- FUNCIONES DE BORRADO ---
   const eliminarCliente = async (id, nombre) => {
     const { isConfirmed } = await Swal.fire({
-      title: `¿Eliminar a ${nombre}?`,
-      text: "Se borrará todo su historial de pagos. Esto no se puede deshacer.",
+      title: `¿Eliminar a ${nombre} DEFINITIVAMENTE?`,
+      text: "Se borrará todo su historial y se restará la plata de la recaudación. Si solo querés pausarlo, usá el botón de Baja.",
       icon: 'warning',
       showCancelButton: true,
       confirmButtonColor: '#d33',
@@ -132,7 +164,35 @@ export default function ListadoClientes() {
     }
   };
 
-  // --- FUNCIONES DE EDICIÓN DE INFO PERSONAL ---
+  // --- NUEVA FUNCIÓN: Alternar Baja / Activo ---
+  const toggleEstadoCliente = async (id, nombre, estadoActual) => {
+    const nuevoEstado = !estadoActual;
+    const accionText = nuevoEstado ? 'reactivar' : 'dar de baja';
+
+    const { isConfirmed } = await Swal.fire({
+      title: `¿${nuevoEstado ? 'Reactivar' : 'Dar de baja'} a ${nombre}?`,
+      text: `El cliente pasará a estar ${nuevoEstado ? 'Activo' : 'de Baja'}. Sus pagos anteriores se conservan en la recaudación.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: nuevoEstado ? '#16a34a' : '#ea580c',
+      cancelButtonColor: '#3085d6',
+      confirmButtonText: `Sí, ${accionText}`,
+      cancelButtonText: 'Cancelar'
+    });
+
+    if (isConfirmed) {
+      try {
+        await updateDoc(doc(db, 'socios', id), { activo: nuevoEstado });
+        // Actualizamos el estado localmente para no hacer otra petición a Firebase
+        setClientes(clientes.map(c => c.id === id ? { ...c, activo: nuevoEstado, tieneDeuda: nuevoEstado ? c.tieneDeuda : false } : c));
+        Swal.fire('Actualizado', `El cliente ahora está ${nuevoEstado ? 'Activo' : 'de Baja'}.`, 'success');
+      } catch (error) {
+        console.error("Error actualizando estado:", error);
+        Swal.fire('Error', 'No se pudo cambiar el estado del cliente.', 'error');
+      }
+    }
+  };
+
   const abrirEditorInfo = (cliente) => {
     setEditandoInfo(cliente);
     setInfoTemp({
@@ -140,7 +200,8 @@ export default function ListadoClientes() {
       telefono: cliente.telefono || '',
       domicilio: cliente.domicilio || '',
       vendedor: cliente.vendedor || '',
-      esAbonado: cliente.esAbonado || false
+      esAbonado: cliente.esAbonado || false,
+      nrosRifa: cliente.nrosRifa || ''
     });
   };
 
@@ -148,7 +209,7 @@ export default function ListadoClientes() {
     try {
       const clienteRef = doc(db, 'socios', editandoInfo.id);
       await updateDoc(clienteRef, infoTemp);
-      await fetchClientes(); // Recargamos para ver los cambios
+      await fetchClientes(); 
       Swal.fire({ icon: 'success', title: 'Datos Actualizados', timer: 1500, showConfirmButton: false });
       setEditandoInfo(null);
     } catch (error) {
@@ -156,7 +217,6 @@ export default function ListadoClientes() {
     }
   };
 
-  // --- FUNCIONES DE EDICIÓN DE PAGOS ---
   const abrirEditorPagos = (cliente) => {
     setClienteEditando(cliente);
     setPagosTemp(cliente.pagos || meses.reduce((acc, mes) => ({ ...acc, [mes]: { pagado: false } }), {}));
@@ -175,9 +235,7 @@ export default function ListadoClientes() {
         title: `Registrar pago de ${mes}`,
         html: `
           <div class="text-left font-sans">
-            <label class="block text-sm font-bold text-gray-700 mb-1 mt-4">Nro. de Rifa:</label>
-            <input id="swal-nro" type="number" min="1" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none mb-4" placeholder="Ej: 085">
-            <label class="block text-sm font-bold text-gray-700 mb-1">Método de Pago:</label>
+            <label class="block text-sm font-bold text-gray-700 mb-1 mt-4">Método de Pago:</label>
             <select id="swal-metodo" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
               <option value="Efectivo">Efectivo</option>
               <option value="Transferencia">Transferencia</option>
@@ -185,9 +243,9 @@ export default function ListadoClientes() {
           </div>
         `,
         focusConfirm: false, showCancelButton: true, confirmButtonText: 'Guardar Pago', confirmButtonColor: '#16a34a',
-        preConfirm: () => ({ nroRifa: document.getElementById('swal-nro').value, metodoPago: document.getElementById('swal-metodo').value })
+        preConfirm: () => ({ metodoPago: document.getElementById('swal-metodo').value })
       });
-      if (formValues) setPagosTemp({ ...pagosTemp, [mes]: { pagado: true, nroRifa: formValues.nroRifa, metodoPago: formValues.metodoPago } });
+      if (formValues) setPagosTemp({ ...pagosTemp, [mes]: { pagado: true, metodoPago: formValues.metodoPago } });
     }
   };
 
@@ -216,7 +274,6 @@ export default function ListadoClientes() {
           <h1 className="text-3xl font-bold text-gray-800">Lista de Clientes</h1>
         </div>
         
-        {/* BARRA DE BÚSQUEDA Y FILTROS */}
         <div className="flex items-center gap-4 w-full md:w-auto">
           <input 
             type="text" 
@@ -243,36 +300,44 @@ export default function ListadoClientes() {
                 <th className="p-4 font-bold">Nros. de Rifa</th>
                 <th className="p-4 font-bold">Nombre</th>
                 <th className="p-4 font-bold">Teléfono</th>
-                <th className="p-4 font-bold">Vendedor</th>
-                <th className="p-4 font-bold text-center">Abonado</th>
                 <th className="p-4 font-bold text-center">Estado</th>
+                <th className="p-4 font-bold text-center">Cuotas</th>
                 <th className="p-4 font-bold text-center">Acciones</th>
               </tr>
             </thead>
             <tbody className="text-gray-700 text-sm divide-y divide-gray-200">
               {cargando ? (
-                <tr><td colSpan="7" className="text-center p-8 font-bold text-gray-400">Cargando base de datos...</td></tr>
+                <tr><td colSpan="6" className="text-center p-8 font-bold text-gray-400">Cargando base de datos...</td></tr>
               ) : clientesFiltrados.length === 0 ? (
-                <tr><td colSpan="7" className="text-center p-8 font-bold text-gray-400">No se encontraron clientes.</td></tr>
+                <tr><td colSpan="6" className="text-center p-8 font-bold text-gray-400">No se encontraron clientes.</td></tr>
               ) : (
                 clientesFiltrados.map((cliente) => (
-                  <tr key={cliente.id} className="hover:bg-gray-50 transition">
-                    <td className="p-4 font-bold text-gray-900 bg-yellow-50">{cliente.nrosAsignados || '-'}</td>
-                    <td className="p-4 font-bold">{cliente.cliente}</td>
+                  <tr key={cliente.id} className={`transition duration-200 ${!cliente.activo ? 'bg-gray-100 opacity-70 grayscale-[0.5]' : 'hover:bg-gray-50'}`}>
+                    <td className={`p-4 font-bold text-gray-900 ${cliente.activo ? 'bg-yellow-50' : ''}`}>{cliente.nrosAsignados || '-'}</td>
+                    <td className="p-4 font-bold">
+                      {cliente.cliente}
+                      {!cliente.activo && <span className="ml-2 text-[10px] bg-gray-500 text-white px-2 py-0.5 rounded uppercase">Dado de Baja</span>}
+                    </td>
                     <td className="p-4">{cliente.telefono || '-'}</td>
-                    <td className="p-4"><span className="bg-gray-200 text-gray-700 px-2 py-1 rounded-md text-xs font-bold">{cliente.vendedor}</span></td>
                     <td className="p-4 text-center">
-                      {cliente.esAbonado ? <span className="bg-purple-100 text-purple-700 px-2 py-1 rounded-md text-xs font-bold inline-flex items-center gap-1">⭐ Sí</span> : <span className="text-gray-400 font-bold text-xs">-</span>}
+                      {cliente.activo ? (
+                        <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">Activo</span>
+                      ) : (
+                        <span className="bg-gray-300 text-gray-700 px-3 py-1 rounded-full text-xs font-bold">Baja</span>
+                      )}
                     </td>
                     <td className="p-4 text-center">
-                      <span className={`px-3 py-1 rounded-full text-xs font-bold ${cliente.cuotasPagas === 12 ? 'bg-green-100 text-green-700' : cliente.cuotasPagas > 0 ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
-                        {cliente.cuotasPagas} / 12
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold inline-flex items-center gap-1 ${!cliente.activo ? 'bg-gray-200 text-gray-600' : cliente.tieneDeuda ? 'bg-red-100 text-red-700' : cliente.cuotasPagas === 12 ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                        {cliente.cuotasPagas} / 12 {cliente.tieneDeuda && cliente.activo && <span className="text-red-600 text-[16px] leading-none font-black ml-1" title="Cuota/s pendiente/s">*</span>}
                       </span>
                     </td>
                     <td className="p-4 text-center flex items-center justify-center gap-2">
+                      <button onClick={() => toggleEstadoCliente(cliente.id, cliente.cliente, cliente.activo)} className={`font-bold py-1 px-2 rounded transition shadow-sm border ${cliente.activo ? 'bg-orange-100 text-orange-700 border-orange-200 hover:bg-orange-200' : 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200'}`} title={cliente.activo ? "Dar de Baja Lógica" : "Reactivar Cliente"}>
+                        {cliente.activo ? '⏸️' : '▶️'}
+                      </button>
                       <button onClick={() => abrirEditorPagos(cliente)} className="bg-blue-100 text-blue-700 hover:bg-blue-200 font-bold py-1 px-2 rounded transition shadow-sm border border-blue-200" title="Editar Pagos">✏️</button>
                       <button onClick={() => abrirEditorInfo(cliente)} className="bg-gray-100 text-gray-700 hover:bg-gray-200 font-bold py-1 px-2 rounded transition shadow-sm border border-gray-300" title="Editar Info Personal">⚙️</button>
-                      <button onClick={() => eliminarCliente(cliente.id, cliente.cliente)} className="bg-red-100 text-red-700 hover:bg-red-200 font-bold py-1 px-2 rounded transition shadow-sm border border-red-200" title="Eliminar Cliente">🗑️</button>
+                      <button onClick={() => eliminarCliente(cliente.id, cliente.cliente)} className="bg-red-100 text-red-700 hover:bg-red-200 font-bold py-1 px-2 rounded transition shadow-sm border border-red-200" title="Eliminar Definitivamente">🗑️</button>
                     </td>
                   </tr>
                 ))
@@ -303,7 +368,6 @@ export default function ListadoClientes() {
                       {estaPagado ? (
                         <>
                           <span className="bg-green-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm font-bold shadow-sm mb-1">✓</span>
-                          {pagosTemp[mes].nroRifa && <span className="text-[11px] font-bold bg-green-200 text-green-800 px-2 py-0.5 rounded-md">#{pagosTemp[mes].nroRifa}</span>}
                           {pagosTemp[mes].metodoPago && <span className="text-[10px] text-gray-600 uppercase font-bold">{pagosTemp[mes].metodoPago}</span>}
                         </>
                       ) : <span className="w-6 h-6 border-2 border-gray-300 rounded-full bg-gray-50 mt-1"></span>}
@@ -334,6 +398,10 @@ export default function ListadoClientes() {
                 <input type="text" value={infoTemp.cliente} onChange={e => setInfoTemp({...infoTemp, cliente: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" />
               </div>
               <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Números Asignados (separados por coma)</label>
+                <input type="text" value={infoTemp.nrosRifa} onChange={e => setInfoTemp({...infoTemp, nrosRifa: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" />
+              </div>
+              <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">Teléfono</label>
                 <input type="text" value={infoTemp.telefono} onChange={e => setInfoTemp({...infoTemp, telefono: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" />
               </div>
@@ -345,8 +413,9 @@ export default function ListadoClientes() {
                 <label className="block text-sm font-bold text-gray-700 mb-1">Vendedor</label>
                 <select value={infoTemp.vendedor} onChange={e => setInfoTemp({...infoTemp, vendedor: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
                   <option value="">Seleccione...</option>
-                  <option value="Juan Pérez">Juan Pérez</option>
-                  <option value="María Gómez">María Gómez</option>
+                  <option value="Gaitan Victor Adrian">Gaitan Victor Adrian</option>
+                  <option value="Tufarelli Nestor Dario">Tufarelli Nestor Dario</option>
+                  {/* Podés agregar más vendedores si lo necesitás */}
                 </select>
               </div>
               <div className="flex items-center gap-2 mt-4 bg-gray-50 p-3 rounded-lg border">

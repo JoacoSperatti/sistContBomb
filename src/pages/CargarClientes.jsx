@@ -7,7 +7,6 @@ import Swal from "sweetalert2";
 export default function CargarClientes() {
   const navigate = useNavigate();
 
-  // Eliminamos nroRifa de acá
   const estadoInicialForm = {
     cliente: "",
     vendedor: "",
@@ -17,31 +16,22 @@ export default function CargarClientes() {
     domicilio: "",
     metodoPago: "",
     esAbonado: false,
+    nrosRifa: "", // Campo para toda la campaña
   };
 
   const [formData, setFormData] = useState(estadoInicialForm);
   const [cargando, setCargando] = useState(false);
 
   const meses = [
-    "Agosto",
-    "Septiembre",
-    "Octubre",
-    "Noviembre",
-    "Diciembre",
-    "Enero",
-    "Febrero",
-    "Marzo",
-    "Abril",
-    "Mayo",
-    "Junio",
-    "Julio",
+    "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
   ];
 
   const [pagos, setPagos] = useState(
     meses.reduce(
       (acc, mes) => ({
         ...acc,
-        [mes]: { pagado: false, nroRifa: "", metodoPago: "" },
+        [mes]: { pagado: false, metodoPago: "" },
       }),
       {},
     ),
@@ -58,17 +48,14 @@ export default function CargarClientes() {
     if (pagoActual && pagoActual.pagado) {
       setPagos({
         ...pagos,
-        [mes]: { pagado: false, nroRifa: "", metodoPago: "" },
+        [mes]: { pagado: false, metodoPago: "" },
       });
     } else {
       const { value: formValues } = await Swal.fire({
         title: `Registrar pago de ${mes}`,
         html: `
           <div class="text-left font-sans">
-            <label class="block text-sm font-bold text-gray-700 mb-1 mt-4">Nro. de Rifa para este mes:</label>
-            <input id="swal-nro" type="number" min="1" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none mb-4" placeholder="Ej: 085">
-
-            <label class="block text-sm font-bold text-gray-700 mb-1">Método de Pago:</label>
+            <label class="block text-sm font-bold text-gray-700 mb-1 mt-4">Método de Pago:</label>
             <select id="swal-metodo" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
               <option value="${formData.metodoPago || "Efectivo"}">${formData.metodoPago || "Efectivo"}</option>
               <option value="Efectivo">Efectivo</option>
@@ -83,7 +70,6 @@ export default function CargarClientes() {
         cancelButtonText: "Cancelar",
         preConfirm: () => {
           return {
-            nroRifa: document.getElementById("swal-nro").value,
             metodoPago: document.getElementById("swal-metodo").value,
           };
         },
@@ -94,7 +80,6 @@ export default function CargarClientes() {
           ...pagos,
           [mes]: {
             pagado: true,
-            nroRifa: formValues.nroRifa,
             metodoPago: formValues.metodoPago,
           },
         });
@@ -127,7 +112,7 @@ export default function CargarClientes() {
         meses.reduce(
           (acc, mes) => ({
             ...acc,
-            [mes]: { pagado: false, nroRifa: "", metodoPago: "" },
+            [mes]: { pagado: false, metodoPago: "" },
           }),
           {},
         ),
@@ -181,6 +166,23 @@ export default function CargarClientes() {
                     onChange={handleInputChange}
                   />
                 </div>
+                
+                {/* INPUT DE NÚMEROS DE RIFA - ESTILO GRIS UNIFORME */}
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">
+                    Números Asignados (separados por coma) *
+                  </label>
+                  <input
+                    type="text"
+                    name="nrosRifa"
+                    placeholder="Ej: 1001, 1005"
+                    value={formData.nrosRifa}
+                    required
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none"
+                    onChange={handleInputChange}
+                  />
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-bold text-gray-700 mb-1">
@@ -222,7 +224,7 @@ export default function CargarClientes() {
               </div>
             </div>
 
-            {/* Columna 2: Reestructurada */}
+            {/* Columna 2 */}
             <div>
               <h2 className="text-xl font-bold text-red-600 mb-4 border-b pb-2">
                 Detalles de Venta
@@ -308,9 +310,10 @@ export default function CargarClientes() {
             </div>
           </div>
 
+          {/* Sección de pagos (sin cambios) */}
           <div className="mt-10">
             <h2 className="text-xl font-bold text-blue-800 mb-4 border-b pb-2">
-              Control de Cuotas (Detallar número por mes)
+              Control de Pagos (Meses Abonados)
             </h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
               {meses.map((mes) => {
@@ -332,11 +335,6 @@ export default function CargarClientes() {
                         <span className="bg-green-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm font-bold shadow-sm mb-1">
                           ✓
                         </span>
-                        {pagos[mes].nroRifa && (
-                          <span className="text-[11px] font-bold bg-green-200 text-green-800 px-2 py-0.5 rounded-md">
-                            #{pagos[mes].nroRifa}
-                          </span>
-                        )}
                         {pagos[mes].metodoPago && (
                           <span className="text-[10px] text-gray-600 uppercase font-bold">
                             {pagos[mes].metodoPago}
