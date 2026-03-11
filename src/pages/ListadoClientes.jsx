@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { collection, getDocs, query, where, doc, updateDoc, deleteDoc, getDoc } from 'firebase/firestore';
 import { getAuth, onAuthStateChanged } from 'firebase/auth'; 
 import { db } from '../firebase/config';
 import * as XLSX from 'xlsx';
@@ -11,8 +11,9 @@ export default function ListadoClientes() {
   const [clientes, setClientes] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [campanaFiltro, setCampanaFiltro] = useState('2025-2026');
-  
   const [busqueda, setBusqueda] = useState('');
+  
+  const [precioCuotaLocal, setPrecioCuotaLocal] = useState(120000);
 
   const [clienteEditando, setClienteEditando] = useState(null);
   const [pagosTemp, setPagosTemp] = useState({});
@@ -26,6 +27,11 @@ export default function ListadoClientes() {
   const fetchClientes = async () => {
     setCargando(true);
     try {
+      const campanaRef = doc(db, 'campanas', campanaFiltro);
+      const campSnap = await getDoc(campanaRef);
+      const precioCuota = campSnap.exists() && campSnap.data().precioBono ? Number(campSnap.data().precioBono) : 120000;
+      setPrecioCuotaLocal(precioCuota);
+
       const q = query(collection(db, 'socios'), where("campana", "==", campanaFiltro));
       const snapshot = await getDocs(q);
 
@@ -33,7 +39,6 @@ export default function ListadoClientes() {
       const anioActual = hoy.getFullYear();
       const mesActual = hoy.getMonth(); 
       const indexMesActual = mesActual >= 7 ? mesActual - 7 : mesActual + 5; 
-      
       const [anioInicio, anioFin] = campanaFiltro.split('-');
       let maxMesesExigibles = 12; 
       
@@ -49,28 +54,45 @@ export default function ListadoClientes() {
         const data = documento.data();
         let cuotasPagas = 0;
         let pagosNormalizados = {};
-        let numerosRifaSet = new Set();
+
+        const nrosAsignados = data.nrosRifa || '';
+        const cantidadNumeros = nrosAsignados.split(',').filter(n => n.trim() !== '').length || 1;
+        const cuotaEsperada = precioCuota * cantidadNumeros;
 
         if (data.pagos) {
           Object.keys(data.pagos).forEach(mes => {
             const pagoInfo = data.pagos[mes];
             if (typeof pagoInfo === 'boolean') {
-              pagosNormalizados[mes] = { pagado: pagoInfo, nroRifa: '', metodoPago: '' };
+              pagosNormalizados[mes] = { pagado: pagoInfo, montoAbonado: pagoInfo ? cuotaEsperada : 0, montoEfectivo: pagoInfo ? cuotaEsperada : 0, montoTransferencia: 0, metodoPago: '', rendido: false };
               if (pagoInfo) cuotasPagas++;
             } else if (pagoInfo && pagoInfo.pagado) {
-              pagosNormalizados[mes] = pagoInfo;
+              let mEfectivo = Number(pagoInfo.montoEfectivo) || 0;
+              let mTransf = Number(pagoInfo.montoTransferencia) || 0;
+              const mAbonado = Number(pagoInfo.montoAbonado) || cuotaEsperada;
+              if (mEfectivo === 0 && mTransf === 0 && mAbonado > 0) {
+                if (pagoInfo.metodoPago === 'Transferencia') mTransf = mAbonado;
+                else mEfectivo = mAbonado;
+              }
+              pagosNormalizados[mes] = { ...pagoInfo, montoAbonado: mAbonado, montoEfectivo: mEfectivo, montoTransferencia: mTransf, rendido: pagoInfo.rendido || false };
               cuotasPagas++;
-              if (pagoInfo.nroRifa) numerosRifaSet.add(pagoInfo.nroRifa);
             } else {
-              pagosNormalizados[mes] = { pagado: false, nroRifa: '', metodoPago: '' };
+              pagosNormalizados[mes] = { pagado: false, montoAbonado: 0, montoEfectivo: 0, montoTransferencia: 0, metodoPago: '', rendido: false };
             }
           });
         }
         
-        const nrosAsignados = data.nrosRifa || Array.from(numerosRifaSet).join(', ');
-
         let tieneDeuda = false;
-        // Solo revisamos deuda si el cliente está activo
+        let tieneTransferenciasPorRendir = false;
+        let ultimoMesPagado = "Ninguno";
+
+        // Determinamos cuál fue el último mes que pagó (buscando de atrás para adelante)
+        for (let i = meses.length - 1; i >= 0; i--) {
+          if (pagosNormalizados[meses[i]]?.pagado) {
+            ultimoMesPagado = meses[i];
+            break;
+          }
+        }
+
         if (data.activo !== false) {
           for (let i = 0; i < maxMesesExigibles; i++) {
             if (!pagosNormalizados[meses[i]]?.pagado) {
@@ -78,16 +100,18 @@ export default function ListadoClientes() {
               break; 
             }
           }
+          Object.values(pagosNormalizados).forEach(p => {
+            if (p.pagado && p.montoAbonado < cuotaEsperada) tieneDeuda = true;
+            if (p.pagado && !p.rendido && (p.metodoPago === 'Transferencia' || p.metodoPago === 'Híbrido' || p.montoTransferencia > 0)) {
+              tieneTransferenciasPorRendir = true;
+            }
+          });
         }
 
         return { 
-          id: documento.id, 
-          ...data, 
-          pagos: pagosNormalizados, 
-          cuotasPagas, 
-          nrosAsignados, 
-          tieneDeuda,
-          activo: data.activo !== false // Si no existe el campo, por defecto es true
+          id: documento.id, ...data, 
+          pagos: pagosNormalizados, cuotasPagas, nrosAsignados, 
+          tieneDeuda, tieneTransferenciasPorRendir, ultimoMesPagado, activo: data.activo !== false, cuotaEsperada
         };
       });
 
@@ -121,10 +145,7 @@ export default function ListadoClientes() {
   );
 
   const exportarExcel = () => {
-    if (clientesFiltrados.length === 0) {
-      Swal.fire('Tabla vacía', 'No hay clientes para exportar.', 'warning');
-      return;
-    }
+    if (clientesFiltrados.length === 0) return Swal.fire('Tabla vacía', 'No hay clientes.', 'warning');
     const datosFormateados = clientesFiltrados.map(c => ({
       "Nros. de Rifa": c.nrosAsignados || '-',
       "Nombre y Apellido": c.cliente,
@@ -132,7 +153,10 @@ export default function ListadoClientes() {
       "Vendedor": c.vendedor,
       "¿Es Abonado?": c.esAbonado ? 'Sí' : 'No',
       "Estado": c.activo ? 'Activo' : 'Baja',
-      "Cuotas Pagas": `${c.cuotasPagas} de 12 ${c.tieneDeuda ? '(* Deuda)' : ''}`
+      "Último Mes Pago": c.ultimoMesPagado,
+      "Cuotas Pagas": `${c.cuotasPagas} de 12`,
+      "Deuda": c.tieneDeuda ? 'CON DEUDA / PAGO PARCIAL' : 'AL DÍA',
+      "Rendición Transf.": c.tieneTransferenciasPorRendir ? 'FALTA RENDIR' : 'OK'
     }));
     const hoja = XLSX.utils.json_to_sheet(datosFormateados);
     const libro = XLSX.utils.book_new();
@@ -143,152 +167,155 @@ export default function ListadoClientes() {
   const eliminarCliente = async (id, nombre) => {
     const { isConfirmed } = await Swal.fire({
       title: `¿Eliminar a ${nombre} DEFINITIVAMENTE?`,
-      text: "Se borrará todo su historial y se restará la plata de la recaudación. Si solo querés pausarlo, usá el botón de Baja.",
-      icon: 'warning',
-      showCancelButton: true,
-      confirmButtonColor: '#d33',
-      cancelButtonColor: '#3085d6',
-      confirmButtonText: 'Sí, eliminar',
-      cancelButtonText: 'Cancelar'
+      text: "Se borrará todo su historial y restará plata de la caja. Si solo querés pausarlo, usá el botón de Baja.",
+      icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Sí, eliminar'
     });
-
     if (isConfirmed) {
-      try {
-        await deleteDoc(doc(db, 'socios', id));
-        setClientes(clientes.filter(c => c.id !== id));
-        Swal.fire('Eliminado', 'El cliente ha sido borrado.', 'success');
-      } catch (error) {
-        console.error("Error borrando:", error);
-        Swal.fire('Error', 'No se pudo eliminar al cliente.', 'error');
-      }
+      await deleteDoc(doc(db, 'socios', id));
+      setClientes(clientes.filter(c => c.id !== id));
+      Swal.fire('Eliminado', 'Cliente borrado.', 'success');
     }
   };
 
-  // --- NUEVA FUNCIÓN: Alternar Baja / Activo ---
-  const toggleEstadoCliente = async (id, nombre, estadoActual) => {
-    const nuevoEstado = !estadoActual;
-    const accionText = nuevoEstado ? 'reactivar' : 'dar de baja';
+  const toggleEstadoCliente = async (cliente) => {
+    const nuevoEstado = !cliente.activo;
+    
+    // Alerta de Auditoría Visual si lo estamos dando de baja
+    const htmlWarning = nuevoEstado 
+      ? `Pasará a <b>Activo</b>. Los pagos anteriores se conservan.` 
+      : `<div class="text-left mt-2">
+           <p class="mb-4">Pasará a <b>Baja</b>. Su historial de pagos se conservará en la recaudación.</p>
+           <div class="bg-orange-50 border border-orange-200 p-4 rounded-lg shadow-sm">
+             <p class="text-sm text-orange-800 font-bold mb-1 flex items-center gap-2">⚠️ Control de Cuponera Física:</p>
+             <p class="text-xs text-orange-700">Según el sistema, el último mes abonado es <b>${cliente.ultimoMesPagado.toUpperCase()}</b>.</p>
+             <p class="text-xs text-orange-700 mt-2 font-bold">Por favor, verificá que coincida exactamente con el último cartón de la chequera que devuelve el cliente.</p>
+           </div>
+         </div>`;
 
     const { isConfirmed } = await Swal.fire({
-      title: `¿${nuevoEstado ? 'Reactivar' : 'Dar de baja'} a ${nombre}?`,
-      text: `El cliente pasará a estar ${nuevoEstado ? 'Activo' : 'de Baja'}. Sus pagos anteriores se conservan en la recaudación.`,
-      icon: 'warning',
-      showCancelButton: true,
-      confirmButtonColor: nuevoEstado ? '#16a34a' : '#ea580c',
-      cancelButtonColor: '#3085d6',
-      confirmButtonText: `Sí, ${accionText}`,
-      cancelButtonText: 'Cancelar'
+      title: `¿${nuevoEstado ? 'Reactivar' : 'Dar de baja'} a ${cliente.cliente}?`,
+      html: htmlWarning,
+      icon: 'warning', 
+      showCancelButton: true, 
+      confirmButtonColor: nuevoEstado ? '#16a34a' : '#ea580c', 
+      confirmButtonText: `Sí, ${nuevoEstado ? 'reactivar' : 'dar de baja'}`
     });
 
     if (isConfirmed) {
-      try {
-        await updateDoc(doc(db, 'socios', id), { activo: nuevoEstado });
-        // Actualizamos el estado localmente para no hacer otra petición a Firebase
-        setClientes(clientes.map(c => c.id === id ? { ...c, activo: nuevoEstado, tieneDeuda: nuevoEstado ? c.tieneDeuda : false } : c));
-        Swal.fire('Actualizado', `El cliente ahora está ${nuevoEstado ? 'Activo' : 'de Baja'}.`, 'success');
-      } catch (error) {
-        console.error("Error actualizando estado:", error);
-        Swal.fire('Error', 'No se pudo cambiar el estado del cliente.', 'error');
-      }
+      await updateDoc(doc(db, 'socios', cliente.id), { activo: nuevoEstado });
+      setClientes(clientes.map(c => c.id === cliente.id ? { ...c, activo: nuevoEstado, tieneDeuda: nuevoEstado ? c.tieneDeuda : false, tieneTransferenciasPorRendir: nuevoEstado ? c.tieneTransferenciasPorRendir : false } : c));
     }
   };
 
   const abrirEditorInfo = (cliente) => {
     setEditandoInfo(cliente);
     setInfoTemp({
-      cliente: cliente.cliente,
-      telefono: cliente.telefono || '',
-      domicilio: cliente.domicilio || '',
-      vendedor: cliente.vendedor || '',
-      esAbonado: cliente.esAbonado || false,
-      nrosRifa: cliente.nrosRifa || ''
+      cliente: cliente.cliente, telefono: cliente.telefono || '', domicilio: cliente.domicilio || '',
+      vendedor: cliente.vendedor || '', esAbonado: cliente.esAbonado || false, 
+      nrosRifa: cliente.nrosAsignados || '', metodoPago: cliente.metodoPago || ''
     });
   };
 
   const guardarCambiosInfo = async () => {
-    try {
-      const clienteRef = doc(db, 'socios', editandoInfo.id);
-      await updateDoc(clienteRef, infoTemp);
-      await fetchClientes(); 
-      Swal.fire({ icon: 'success', title: 'Datos Actualizados', timer: 1500, showConfirmButton: false });
-      setEditandoInfo(null);
-    } catch (error) {
-      Swal.fire('Error', 'No se pudieron guardar los datos.', 'error');
-    }
+    await updateDoc(doc(db, 'socios', editandoInfo.id), infoTemp);
+    await fetchClientes(); 
+    setEditandoInfo(null);
+    Swal.fire({ icon: 'success', title: 'Datos Actualizados', timer: 1500, showConfirmButton: false });
   };
 
   const abrirEditorPagos = (cliente) => {
     setClienteEditando(cliente);
-    setPagosTemp(cliente.pagos || meses.reduce((acc, mes) => ({ ...acc, [mes]: { pagado: false } }), {}));
+    setPagosTemp(cliente.pagos || meses.reduce((acc, mes) => ({ ...acc, [mes]: { pagado: false, montoAbonado: 0 } }), {}));
   };
 
   const togglePago = async (mes) => {
     const pagoActual = pagosTemp[mes];
-    if (pagoActual && pagoActual.pagado) {
-      const { isConfirmed } = await Swal.fire({
-        title: `¿Anular pago de ${mes}?`,
-        icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Sí, anular'
-      });
-      if (isConfirmed) setPagosTemp({ ...pagosTemp, [mes]: { pagado: false, nroRifa: '', metodoPago: '' } });
+    const cantidadNumeros = clienteEditando.nrosAsignados.split(',').filter(n => n.trim() !== '').length || 1;
+    const montoSugerido = precioCuotaLocal * cantidadNumeros;
+    const metodoHab = clienteEditando.metodoPago || "Efectivo";
+
+    let efVal = 0; let trVal = 0;
+    if (pagoActual?.pagado) {
+      efVal = pagoActual.montoEfectivo || 0;
+      trVal = pagoActual.montoTransferencia || 0;
     } else {
-      const { value: formValues } = await Swal.fire({
-        title: `Registrar pago de ${mes}`,
-        html: `
-          <div class="text-left font-sans">
-            <label class="block text-sm font-bold text-gray-700 mb-1 mt-4">Método de Pago:</label>
-            <select id="swal-metodo" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
-              <option value="Efectivo">Efectivo</option>
-              <option value="Transferencia">Transferencia</option>
-            </select>
+      efVal = metodoHab === "Transferencia" ? 0 : montoSugerido;
+      trVal = metodoHab === "Transferencia" ? montoSugerido : 0;
+    }
+
+    const checkRendido = pagoActual?.rendido ? 'checked' : '';
+
+    const { value: formValues, isDenied } = await Swal.fire({
+      title: pagoActual?.pagado ? `Editar pago de ${mes}` : `Registrar pago de ${mes}`,
+      html: `
+        <div class="text-left font-sans">
+          <div class="bg-blue-50 text-blue-800 p-2 rounded mb-4 text-xs font-bold border border-blue-200">
+            Valor esperado por ${cantidadNumeros} número(s): $${montoSugerido.toLocaleString('es-AR')}
           </div>
-        `,
-        focusConfirm: false, showCancelButton: true, confirmButtonText: 'Guardar Pago', confirmButtonColor: '#16a34a',
-        preConfirm: () => ({ metodoPago: document.getElementById('swal-metodo').value })
-      });
-      if (formValues) setPagosTemp({ ...pagosTemp, [mes]: { pagado: true, metodoPago: formValues.metodoPago } });
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label class="block text-sm font-bold text-gray-700 mb-1">Efectivo ($):</label>
+              <input id="swal-ef" type="number" value="${efVal}" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
+            </div>
+            <div>
+              <label class="block text-sm font-bold text-gray-700 mb-1">Transferencia ($):</label>
+              <input id="swal-tr" type="number" value="${trVal}" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
+            </div>
+          </div>
+          <div class="flex items-center gap-2 bg-gray-50 p-3 rounded-lg border">
+            <input type="checkbox" id="swal-rendido" class="w-5 h-5 text-green-600" ${checkRendido}>
+            <label class="font-bold text-sm text-gray-700 cursor-pointer">Marcar Transferencia Rendida</label>
+          </div>
+        </div>
+      `,
+      focusConfirm: false, showCancelButton: true, showDenyButton: pagoActual?.pagado, 
+      confirmButtonText: 'Guardar Pago', confirmButtonColor: '#16a34a',
+      denyButtonText: 'Anular Pago', denyButtonColor: '#d33',
+      preConfirm: () => {
+        const ef = Number(document.getElementById('swal-ef').value);
+        const tr = Number(document.getElementById('swal-tr').value);
+        const ren = document.getElementById('swal-rendido').checked;
+        
+        if (ef === 0 && tr === 0) return { anular: true };
+        
+        let metodo = "Efectivo";
+        if (ef > 0 && tr > 0) metodo = "Híbrido";
+        else if (tr > 0) metodo = "Transferencia";
+
+        return { montoEfectivo: ef, montoTransferencia: tr, montoAbonado: ef + tr, metodoPago: metodo, rendido: ren };
+      }
+    });
+
+    if (isDenied || (formValues && formValues.anular)) {
+      setPagosTemp({ ...pagosTemp, [mes]: { pagado: false, montoAbonado: 0, montoEfectivo: 0, montoTransferencia: 0, metodoPago: '', rendido: false } });
+    } else if (formValues) {
+      setPagosTemp({ ...pagosTemp, [mes]: { pagado: true, ...formValues } });
     }
   };
 
   const guardarCambiosPagos = async () => {
     setGuardandoPago(true);
-    try {
-      const clienteRef = doc(db, 'socios', clienteEditando.id);
-      await updateDoc(clienteRef, { pagos: pagosTemp });
-      await fetchClientes();
-      Swal.fire({ icon: 'success', title: 'Pagos Actualizados', confirmButtonColor: '#16a34a', timer: 2000 });
-      setClienteEditando(null);
-    } catch (error) {
-      Swal.fire('Error', 'No se pudieron guardar los cambios.', 'error');
-    } finally {
-      setGuardandoPago(false);
-    }
+    await updateDoc(doc(db, 'socios', clienteEditando.id), { pagos: pagosTemp });
+    await fetchClientes();
+    setClienteEditando(null);
+    setGuardandoPago(false);
+    Swal.fire({ icon: 'success', title: 'Pagos Actualizados', timer: 2000, showConfirmButton: false });
   };
 
   return (
     <div className="min-h-screen bg-gray-100 p-8 font-sans relative">
       <div className="max-w-7xl mx-auto mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
         <div className="flex items-center gap-4">
-          <button onClick={() => navigate('/home')} className="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition shadow">
-            ← Volver al Tablero
-          </button>
+          <button onClick={() => navigate('/home')} className="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition shadow">← Volver al Tablero</button>
           <h1 className="text-3xl font-bold text-gray-800">Lista de Clientes</h1>
         </div>
-        
         <div className="flex items-center gap-4 w-full md:w-auto">
-          <input 
-            type="text" 
-            placeholder="🔍 Buscar nombre, nro o tel..." 
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            className="px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 w-full md:w-64"
-          />
+          <input type="text" placeholder="🔍 Buscar nombre, nro o tel..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} className="px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 w-full md:w-64" />
           <select value={campanaFiltro} onChange={(e) => setCampanaFiltro(e.target.value)} className="px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-bold bg-white hidden sm:block">
             <option value="2025-2026">2025-2026</option>
             <option value="2026-2027">2026-2027</option>
           </select>
-          <button onClick={exportarExcel} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow transition flex items-center gap-2">
-            <span>📊</span> <span className="hidden sm:inline">Exportar</span>
-          </button>
+          <button onClick={exportarExcel} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow transition flex items-center gap-2"><span>📊</span> <span className="hidden sm:inline">Exportar</span></button>
         </div>
       </div>
 
@@ -314,27 +341,38 @@ export default function ListadoClientes() {
                 clientesFiltrados.map((cliente) => (
                   <tr key={cliente.id} className={`transition duration-200 ${!cliente.activo ? 'bg-gray-100 opacity-70 grayscale-[0.5]' : 'hover:bg-gray-50'}`}>
                     <td className={`p-4 font-bold text-gray-900 ${cliente.activo ? 'bg-yellow-50' : ''}`}>{cliente.nrosAsignados || '-'}</td>
-                    <td className="p-4 font-bold">
-                      {cliente.cliente}
-                      {!cliente.activo && <span className="ml-2 text-[10px] bg-gray-500 text-white px-2 py-0.5 rounded uppercase">Dado de Baja</span>}
-                    </td>
+                    <td className="p-4 font-bold">{cliente.cliente} {!cliente.activo && <span className="ml-2 text-[10px] bg-gray-500 text-white px-2 py-0.5 rounded uppercase">Dado de Baja</span>}</td>
                     <td className="p-4">{cliente.telefono || '-'}</td>
                     <td className="p-4 text-center">
                       {cliente.activo ? (
                         <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">Activo</span>
                       ) : (
-                        <span className="bg-gray-300 text-gray-700 px-3 py-1 rounded-full text-xs font-bold">Baja</span>
+                        <div className="flex flex-col items-center justify-center gap-1">
+                          <span className="bg-gray-300 text-gray-700 px-3 py-1 rounded-full text-xs font-bold">Baja</span>
+                          {/* ETIQUETA VISUAL DEL ÚLTIMO PAGO */}
+                          <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mt-1">Últ. pago: {cliente.ultimoMesPagado}</span>
+                        </div>
                       )}
                     </td>
                     <td className="p-4 text-center">
-                      <span className={`px-3 py-1 rounded-full text-xs font-bold inline-flex items-center gap-1 ${!cliente.activo ? 'bg-gray-200 text-gray-600' : cliente.tieneDeuda ? 'bg-red-100 text-red-700' : cliente.cuotasPagas === 12 ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
-                        {cliente.cuotasPagas} / 12 {cliente.tieneDeuda && cliente.activo && <span className="text-red-600 text-[16px] leading-none font-black ml-1" title="Cuota/s pendiente/s">*</span>}
-                      </span>
+                      <div className="flex flex-col items-center justify-center gap-1">
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold inline-flex items-center gap-1 ${!cliente.activo ? 'bg-gray-200 text-gray-600' : cliente.cuotasPagas === 12 && !cliente.tieneDeuda ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                          {cliente.cuotasPagas} / 12
+                        </span>
+                        {cliente.tieneDeuda && cliente.activo && (
+                          <span className="text-[9px] bg-red-100 text-red-700 border border-red-200 px-2 py-0.5 rounded font-black uppercase tracking-wider shadow-sm">
+                            Pago Parcial / Impago
+                          </span>
+                        )}
+                        {cliente.tieneTransferenciasPorRendir && cliente.activo && (
+                          <span className="text-[9px] bg-orange-100 text-orange-800 border border-orange-300 px-2 py-0.5 rounded font-black uppercase tracking-wider shadow-sm flex items-center gap-1" title="Hay transferencias sin verificar">
+                            ⚠️ Transf. por Rendir
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="p-4 text-center flex items-center justify-center gap-2">
-                      <button onClick={() => toggleEstadoCliente(cliente.id, cliente.cliente, cliente.activo)} className={`font-bold py-1 px-2 rounded transition shadow-sm border ${cliente.activo ? 'bg-orange-100 text-orange-700 border-orange-200 hover:bg-orange-200' : 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200'}`} title={cliente.activo ? "Dar de Baja Lógica" : "Reactivar Cliente"}>
-                        {cliente.activo ? '⏸️' : '▶️'}
-                      </button>
+                      <button onClick={() => toggleEstadoCliente(cliente)} className={`font-bold py-1 px-2 rounded transition shadow-sm border ${cliente.activo ? 'bg-orange-100 text-orange-700 border-orange-200 hover:bg-orange-200' : 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200'}`} title={cliente.activo ? "Dar de Baja Lógica" : "Reactivar Cliente"}>{cliente.activo ? '⏸️' : '▶️'}</button>
                       <button onClick={() => abrirEditorPagos(cliente)} className="bg-blue-100 text-blue-700 hover:bg-blue-200 font-bold py-1 px-2 rounded transition shadow-sm border border-blue-200" title="Editar Pagos">✏️</button>
                       <button onClick={() => abrirEditorInfo(cliente)} className="bg-gray-100 text-gray-700 hover:bg-gray-200 font-bold py-1 px-2 rounded transition shadow-sm border border-gray-300" title="Editar Info Personal">⚙️</button>
                       <button onClick={() => eliminarCliente(cliente.id, cliente.cliente)} className="bg-red-100 text-red-700 hover:bg-red-200 font-bold py-1 px-2 rounded transition shadow-sm border border-red-200" title="Eliminar Definitivamente">🗑️</button>
@@ -354,7 +392,7 @@ export default function ListadoClientes() {
             <div className="bg-gray-50 border-b p-6 flex justify-between items-center">
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Detalle de Cuotas</h2>
-                <p className="text-gray-500 mt-1">Cliente: <span className="font-bold text-red-600">{clienteEditando.cliente}</span></p>
+                <p className="text-gray-500 mt-1">Cliente: <span className="font-bold text-red-600">{clienteEditando.cliente}</span> | Esperado x mes: <strong>${clienteEditando.cuotaEsperada?.toLocaleString('es-AR')}</strong></p>
               </div>
               <button onClick={() => setClienteEditando(null)} className="text-gray-400 hover:text-red-500 text-2xl font-bold">×</button>
             </div>
@@ -368,7 +406,12 @@ export default function ListadoClientes() {
                       {estaPagado ? (
                         <>
                           <span className="bg-green-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm font-bold shadow-sm mb-1">✓</span>
-                          {pagosTemp[mes].metodoPago && <span className="text-[10px] text-gray-600 uppercase font-bold">{pagosTemp[mes].metodoPago}</span>}
+                          <span className={`text-[11px] font-bold ${pagosTemp[mes].montoAbonado < clienteEditando.cuotaEsperada ? 'text-red-600' : 'text-gray-700'}`}>${pagosTemp[mes].montoAbonado}</span>
+                          {pagosTemp[mes].metodoPago && (
+                            <span className="text-[10px] text-gray-600 uppercase font-bold flex gap-1 items-center">
+                              {pagosTemp[mes].metodoPago} {pagosTemp[mes].rendido && <span className="text-green-600 text-sm" title="Rendido">✔️</span>}
+                            </span>
+                          )}
                         </>
                       ) : <span className="w-6 h-6 border-2 border-gray-300 rounded-full bg-gray-50 mt-1"></span>}
                     </div>
@@ -393,30 +436,27 @@ export default function ListadoClientes() {
               <button onClick={() => setEditandoInfo(null)} className="text-gray-400 hover:text-red-500 text-2xl font-bold">×</button>
             </div>
             <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">Nombre y Apellido</label>
-                <input type="text" value={infoTemp.cliente} onChange={e => setInfoTemp({...infoTemp, cliente: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">Números Asignados (separados por coma)</label>
-                <input type="text" value={infoTemp.nrosRifa} onChange={e => setInfoTemp({...infoTemp, nrosRifa: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">Teléfono</label>
-                <input type="text" value={infoTemp.telefono} onChange={e => setInfoTemp({...infoTemp, telefono: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">Domicilio</label>
-                <input type="text" value={infoTemp.domicilio} onChange={e => setInfoTemp({...infoTemp, domicilio: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">Vendedor</label>
-                <select value={infoTemp.vendedor} onChange={e => setInfoTemp({...infoTemp, vendedor: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
-                  <option value="">Seleccione...</option>
-                  <option value="Gaitan Victor Adrian">Gaitan Victor Adrian</option>
-                  <option value="Tufarelli Nestor Dario">Tufarelli Nestor Dario</option>
-                  {/* Podés agregar más vendedores si lo necesitás */}
-                </select>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1">Nombre y Apellido</label><input type="text" value={infoTemp.cliente} onChange={e => setInfoTemp({...infoTemp, cliente: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1">Números Asignados (separados por coma)</label><input type="text" value={infoTemp.nrosRifa} onChange={e => setInfoTemp({...infoTemp, nrosRifa: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1">Teléfono</label><input type="text" value={infoTemp.telefono} onChange={e => setInfoTemp({...infoTemp, telefono: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1">Domicilio</label><input type="text" value={infoTemp.domicilio} onChange={e => setInfoTemp({...infoTemp, domicilio: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" /></div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Vendedor</label>
+                  <select value={infoTemp.vendedor} onChange={e => setInfoTemp({...infoTemp, vendedor: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
+                    <option value="">Seleccione...</option>
+                    <option value="Gaitan Victor Adrian">Gaitan Victor Adrian</option>
+                    <option value="Tufarelli Nestor Dario">Tufarelli Nestor Dario</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Método Habitual</label>
+                  <select value={infoTemp.metodoPago} onChange={e => setInfoTemp({...infoTemp, metodoPago: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
+                    <option value="">Seleccione...</option>
+                    <option value="Efectivo">Efectivo</option>
+                    <option value="Transferencia">Transferencia</option>
+                  </select>
+                </div>
               </div>
               <div className="flex items-center gap-2 mt-4 bg-gray-50 p-3 rounded-lg border">
                 <input type="checkbox" id="editAbonado" checked={infoTemp.esAbonado} onChange={e => setInfoTemp({...infoTemp, esAbonado: e.target.checked})} className="w-5 h-5 text-red-600" />
@@ -430,7 +470,6 @@ export default function ListadoClientes() {
           </div>
         </div>
       )}
-
     </div>
   );
 }
