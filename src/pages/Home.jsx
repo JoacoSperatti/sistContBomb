@@ -8,6 +8,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  writeBatch
 } from "firebase/firestore";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { db } from "../firebase/config";
@@ -24,7 +25,7 @@ export default function Home() {
   const [campanaActiva, setCampanaActiva] = useState("2025-2026");
 
   const [precioBono, setPrecioBono] = useState(120000);
-  const [stats, setStats] = useState({ vendidos: 0, recaudado: 0 });
+  const [stats, setStats] = useState({ vendidos: 0, recaudado: 0, totalRifas: 0 });
   const [cargando, setCargando] = useState(true);
 
   const handleEditarPrecio = async () => {
@@ -48,6 +49,58 @@ export default function Home() {
     }
   };
 
+  // NUEVA FUNCIÓN: Generar números de rifa en la base de datos
+  const handleGenerarRifas = async () => {
+    const { value: maxNum } = await Swal.fire({
+      title: 'Generar Base de Números',
+      text: `¿Cuántos números se venden en la ${campanaActiva}? (Ej: 5000). Se crearán desde el 0 hasta el número que elijas.`,
+      input: 'number',
+      showCancelButton: true,
+      confirmButtonText: 'Generar Base',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#dc2626'
+    });
+
+    if (maxNum && Number(maxNum) >= 0) {
+      setCargando(true);
+      try {
+        let batch = writeBatch(db);
+        let count = 0;
+        const total = Number(maxNum);
+
+        for (let i = 0; i <= total; i++) {
+          // Guardamos con ID único: "2025-2026_1001"
+          const docRef = doc(db, "rifas", `${campanaActiva}_${i}`); 
+          batch.set(docRef, {
+            numero: i.toString(),
+            estado: "disponible",
+            clienteId: null,
+            campana: campanaActiva
+          });
+          
+          count++;
+          // Firestore permite máximo 500 operaciones por batch
+          if (count === 490) {
+            await batch.commit();
+            batch = writeBatch(db);
+            count = 0;
+          }
+        }
+        if (count > 0) {
+          await batch.commit();
+        }
+        Swal.fire("¡Listo!", `Se generaron los números del 0 al ${total} exitosamente.`, "success");
+        // Recargar stats
+        window.location.reload();
+      } catch (error) {
+        console.error("Error generando:", error);
+        Swal.fire("Error", "Hubo un problema al generar los números.", "error");
+      } finally {
+        setCargando(false);
+      }
+    }
+  };
+
   useEffect(() => {
     const auth = getAuth();
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -65,6 +118,7 @@ export default function Home() {
             setPrecioBono(precioCuotaRef);
           }
 
+          // Consultar stats de socios
           const q = query(collection(db, "socios"), where("campana", "==", campanaActiva));
           const querySnapshot = await getDocs(q);
 
@@ -73,13 +127,8 @@ export default function Home() {
 
           querySnapshot.forEach((documento) => {
             const socio = documento.data();
-            
-            // Calculamos cuántos números tiene este cliente en base a las comas
-            const cantidadNumeros = socio.nrosRifa 
-              ? socio.nrosRifa.split(',').filter(n => n.trim() !== '').length 
-              : 1;
+            const cantidadNumeros = socio.nrosRifa ? socio.nrosRifa.split(',').filter(n => n.trim() !== '').length : 1;
               
-            // Sumamos los números reales, no solo 1 por cliente
             if (socio.activo !== false) {
               totalVendidos += cantidadNumeros;
             }
@@ -89,14 +138,17 @@ export default function Home() {
                 if (pago === true) {
                   totalRecaudado += (precioCuotaRef * cantidadNumeros);
                 } else if (pago && pago.pagado === true) {
-                  // Si pagó menos, suma solo lo que pagó
                   totalRecaudado += (Number(pago.montoAbonado) || (precioCuotaRef * cantidadNumeros));
                 }
               });
             }
           });
 
-          setStats({ vendidos: totalVendidos, recaudado: totalRecaudado });
+          // Consultar total de rifas en la base
+          const qRifas = query(collection(db, "rifas"), where("campana", "==", campanaActiva));
+          const rifasSnap = await getDocs(qRifas);
+
+          setStats({ vendidos: totalVendidos, recaudado: totalRecaudado, totalRifas: rifasSnap.size });
         } catch (error) {
           console.error("Error obteniendo datos:", error);
         } finally {
@@ -143,21 +195,33 @@ export default function Home() {
         {cargando ? (
           <div className="text-center text-gray-500 font-bold mt-20 animate-pulse">Sincronizando con la base de datos... ⏳</div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-10">
-            <div className="bg-white p-6 rounded-2xl shadow-lg border-l-8 border-blue-500 relative">
-              <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wide mb-2">Cuota Base (1 Número)</h3>
-              <p className="text-4xl font-black text-gray-800">${precioBono.toLocaleString("es-AR")}</p>
-              <button onClick={handleEditarPrecio} className="absolute top-4 right-4 text-blue-500 hover:text-blue-700 font-bold text-sm bg-blue-50 px-2 py-1 rounded">✏️ Editar</button>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-10">
+              <div className="bg-white p-6 rounded-2xl shadow-lg border-l-8 border-blue-500 relative">
+                <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wide mb-2">Cuota Base (1 Número)</h3>
+                <p className="text-4xl font-black text-gray-800">${precioBono.toLocaleString("es-AR")}</p>
+                <button onClick={handleEditarPrecio} className="absolute top-4 right-4 text-blue-500 hover:text-blue-700 font-bold text-sm bg-blue-50 px-2 py-1 rounded">✏️ Editar</button>
+              </div>
+              <div className="bg-white p-6 rounded-2xl shadow-lg border-l-8 border-yellow-500">
+                <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wide mb-2">Números Vendidos</h3>
+                <p className="text-4xl font-black text-gray-800">{stats.vendidos} <span className="text-lg text-gray-400">/ {stats.totalRifas || '?'}</span></p>
+              </div>
+              <div className="bg-white p-6 rounded-2xl shadow-lg border-l-8 border-green-500">
+                <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wide mb-2">Total Recaudado Real</h3>
+                <p className="text-4xl font-black text-green-600">${stats.recaudado.toLocaleString("es-AR")}</p>
+              </div>
             </div>
-            <div className="bg-white p-6 rounded-2xl shadow-lg border-l-8 border-yellow-500">
-              <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wide mb-2">Números Vendidos</h3>
-              <p className="text-4xl font-black text-gray-800">{stats.vendidos}</p>
+
+            <div className="bg-gray-900 p-8 rounded-2xl shadow-xl flex items-center justify-between">
+               <div>
+                 <h2 className="text-white text-xl font-bold mb-1">Herramientas del Sistema</h2>
+                 <p className="text-gray-400 text-sm">Carga la base de números disponibles antes de empezar a vender.</p>
+               </div>
+               <button onClick={handleGenerarRifas} className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition transform hover:scale-105">
+                 🚀 Generar Base de Números
+               </button>
             </div>
-            <div className="bg-white p-6 rounded-2xl shadow-lg border-l-8 border-green-500">
-              <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wide mb-2">Total Recaudado Real</h3>
-              <p className="text-4xl font-black text-green-600">${stats.recaudado.toLocaleString("es-AR")}</p>
-            </div>
-          </div>
+          </>
         )}
       </main>
     </div>

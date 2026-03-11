@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { collection, addDoc, serverTimestamp, doc, getDoc } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp, doc, getDoc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
 import Swal from "sweetalert2";
 
@@ -10,12 +10,15 @@ export default function CargarClientes() {
   const estadoInicialForm = {
     cliente: "", vendedor: "", correo: "", campana: "2025-2026",
     telefono: "", domicilio: "", metodoPago: "", esAbonado: false,
-    nrosRifa: "", 
   };
 
   const [formData, setFormData] = useState(estadoInicialForm);
   const [cargando, setCargando] = useState(false);
   const [precioCuota, setPrecioCuota] = useState(120000);
+  
+  // NUEVO: Estados para los números de rifa
+  const [numerosSeleccionados, setNumerosSeleccionados] = useState([]);
+  const [numeroBuscado, setNumeroBuscado] = useState('');
 
   const meses = ["Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio"];
 
@@ -37,16 +40,52 @@ export default function CargarClientes() {
     setFormData({ ...formData, [name]: type === "checkbox" ? checked : value });
   };
 
+  // NUEVA FUNCIÓN: Validar si el número está libre
+  const verificarYAgregarNumero = async () => {
+    const numTrim = numeroBuscado.trim();
+    if (!numTrim) return;
+
+    if (numerosSeleccionados.includes(numTrim)) {
+      Swal.fire('Atención', 'Ya agregaste este número a la lista.', 'info');
+      setNumeroBuscado('');
+      return;
+    }
+
+    setCargando(true);
+    try {
+      const rifaRef = doc(db, "rifas", `${formData.campana}_${numTrim}`);
+      const rifaSnap = await getDoc(rifaRef);
+
+      if (!rifaSnap.exists()) {
+        Swal.fire('Error', `El número ${numTrim} no existe en la base de datos. Por favor, generalo desde el Inicio primero.`, 'error');
+      } else if (rifaSnap.data().estado !== 'disponible') {
+        Swal.fire('Ocupado', `El número ${numTrim} ya está vendido.`, 'warning');
+      } else {
+        // Está libre!
+        setNumerosSeleccionados([...numerosSeleccionados, numTrim]);
+        setNumeroBuscado('');
+      }
+    } catch (error) {
+      console.error(error);
+      Swal.fire('Error', 'Hubo un problema de conexión al verificar.', 'error');
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  const quitarNumero = (num) => {
+    setNumerosSeleccionados(numerosSeleccionados.filter(n => n !== num));
+  };
+
   const handlePagoChange = async (mes) => {
     const pagoActual = pagos[mes];
 
-    const cantidadNumeros = formData.nrosRifa.split(',').filter(n => n.trim() !== '').length || 1;
+    const cantidadNumeros = numerosSeleccionados.length || 1;
     const montoSugerido = precioCuota * cantidadNumeros;
 
     if (pagoActual && pagoActual.pagado) {
       setPagos({ ...pagos, [mes]: { pagado: false, metodoPago: "", montoAbonado: 0, montoEfectivo: 0, montoTransferencia: 0 } });
     } else {
-      // INTELIGENCIA DE AUTO-RELLENO SEGÚN MÉTODO HABITUAL
       const metodoHab = formData.metodoPago || "Efectivo";
       const efVal = metodoHab === "Transferencia" ? 0 : montoSugerido;
       const trVal = metodoHab === "Transferencia" ? montoSugerido : 0;
@@ -94,12 +133,38 @@ export default function CargarClientes() {
 
   const handleGuardar = async (e) => {
     e.preventDefault();
+    
+    if (numerosSeleccionados.length === 0) {
+      Swal.fire('Faltan Números', 'Por favor, asignale al menos un número de rifa al cliente.', 'warning');
+      return;
+    }
+
     setCargando(true);
     try {
-      const nuevoSocio = { ...formData, pagos, fechaCreacion: serverTimestamp(), activo: true };
-      await addDoc(collection(db, "socios"), nuevoSocio);
-      Swal.fire({ icon: "success", title: "¡Cliente Guardado!", confirmButtonColor: "#dc2626" });
+      // 1. Guardar el socio usando los números validados
+      const nuevoSocio = { 
+        ...formData, 
+        nrosRifa: numerosSeleccionados.join(', '), 
+        pagos, 
+        fechaCreacion: serverTimestamp(), 
+        activo: true 
+      };
+      
+      const socioDocRef = await addDoc(collection(db, "socios"), nuevoSocio);
+
+      // 2. Marcar esos números como ocupados en la base
+      for (const num of numerosSeleccionados) {
+        const rifaRef = doc(db, "rifas", `${formData.campana}_${num}`);
+        await updateDoc(rifaRef, {
+          estado: 'asignado',
+          clienteId: socioDocRef.id
+        });
+      }
+
+      Swal.fire({ icon: "success", title: "¡Cliente Guardado!", text: `Se registraron los números con éxito.`, confirmButtonColor: "#dc2626" });
+      
       setFormData(estadoInicialForm);
+      setNumerosSeleccionados([]);
       setPagos(meses.reduce((acc, mes) => ({ ...acc, [mes]: { pagado: false, metodoPago: "", montoAbonado: 0, montoEfectivo: 0, montoTransferencia: 0 } }), {}));
     } catch (error) {
       Swal.fire({ icon: "error", title: "Error", text: "Problema al guardar.", confirmButtonColor: "#dc2626" });
@@ -123,10 +188,36 @@ export default function CargarClientes() {
                   <label className="block text-sm font-bold text-gray-700 mb-1">Nombre y Apellido *</label>
                   <input type="text" name="cliente" value={formData.cliente} required className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" onChange={handleInputChange} />
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-1">Números Asignados (separados por coma) *</label>
-                  <input type="text" name="nrosRifa" placeholder="Ej: 1001, 1005" value={formData.nrosRifa} required className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" onChange={handleInputChange} />
+                
+                {/* NUEVO PANEL DE BÚSQUEDA Y ASIGNACIÓN DE NÚMEROS */}
+                <div className="bg-gray-50 p-4 border rounded-lg shadow-sm">
+                  <label className="block text-sm font-bold text-blue-700 mb-2">Asignar Números Disponibles *</label>
+                  <div className="flex gap-2">
+                    <input 
+                      type="number" 
+                      value={numeroBuscado} 
+                      onChange={(e) => setNumeroBuscado(e.target.value)} 
+                      onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), verificarYAgregarNumero())}
+                      placeholder="Ej: 1001" 
+                      className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" 
+                    />
+                    <button type="button" onClick={verificarYAgregarNumero} disabled={cargando} className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-lg transition">
+                      Agregar
+                    </button>
+                  </div>
+                  
+                  {numerosSeleccionados.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {numerosSeleccionados.map(num => (
+                        <span key={num} className="bg-blue-100 text-blue-800 border border-blue-200 px-3 py-1 rounded-full text-sm font-bold flex items-center gap-2 shadow-sm">
+                          {num} 
+                          <button type="button" onClick={() => quitarNumero(num)} className="text-blue-500 hover:text-red-500 font-black">×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-bold text-gray-700 mb-1">Teléfono</label>
@@ -163,8 +254,16 @@ export default function CargarClientes() {
                       <option value="Tufarelli Nestor Dario">Tufarelli Nestor Dario</option>
                       <option value="Stein Cacho Roberto">Stein Cacho Roberto</option>
                       <option value="Jalup Marcelo Adrian">Jalup Marcelo Adrian</option>
+                      <option value="Di Puglia Pugliese Juan Manuel">Di Puglia Pugliese Juan Manuel</option>
                       <option value="Sosa Esteban Daniel">Sosa Esteban Daniel</option>
                       <option value="Curvelo Alba Rodolfo">Curvelo Alba Rodolfo</option>
+                      <option value="Ruiz Oscar Eduardo">Ruiz Oscar Eduardo</option>
+                      <option value="Turfarelli Arzamendia">Turfarelli Arzamendia</option>
+                      <option value="Arzamendia Daniel Edgardo">Arzamendia Daniel Edgardo</option>
+                      <option value="Tomalino Maximiliano">Tomalino Maximiliano</option>
+                      <option value="Puyol Juan Carlos">Puyol Juan Carlos</option>
+                      <option value="Calibar Victor">Calibar Victor</option>
+                      <option value="Facundo Benitez">Facundo Benitez</option>
                     </select>
                   </div>
                 </div>
@@ -191,7 +290,7 @@ export default function CargarClientes() {
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
               {meses.map((mes) => {
                 const estaPagado = pagos[mes]?.pagado;
-                const cantidadNumeros = formData.nrosRifa.split(',').filter(n => n.trim() !== '').length || 1;
+                const cantidadNumeros = numerosSeleccionados.length || 1;
                 const cuotaEsperada = precioCuota * cantidadNumeros;
 
                 return (
