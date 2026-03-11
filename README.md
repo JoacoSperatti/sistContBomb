@@ -1,16 +1,21 @@
-# React + Vite
+cambio: 
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+en la pantalla princilpal en vez de "precio del bono" que diga "precio de la cuota"
 
-Currently, two official plugins are available:
+el numero q compra va para todos los meses (puede comprar 1 revista de 1 numero o de más)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+si hay un mes que no pago un asterisco en lista de clientes
 
-## React Compiler
+campo activo/baja
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+mes abonado no al total (ej 20k de 25k que salga un asterisco)
 
-## Expanding the ESLint configuration
+cliente que paga hibrido (en transferencia y efectivo el mismo mes)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+posibilidad de marcar como rendidos los pagos realizados en transferencia
+
+si un cliente se da de baja te devuelven la cuponera y la ultima cuota paga debe coincidir con el ultimo carton de la cuponera
+
+todos los numeros deben estar cargados en la base de datos por mas de que no tengan un cliente asignado (eso se selecciona en la pantalla principal diciendo el numero mas grande comenzando desde el 0 hasta por ejemplo 5133, esto lo cargamos a mano como x ejemplo el valor de las rifas que se carga a mano)
+
+mostrar todo en un grafico y en el excel al exportar
