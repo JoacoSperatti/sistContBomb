@@ -85,7 +85,6 @@ export default function ListadoClientes() {
         let tieneTransferenciasPorRendir = false;
         let ultimoMesPagado = "Ninguno";
 
-        // Determinamos cuál fue el último mes que pagó (buscando de atrás para adelante)
         for (let i = meses.length - 1; i >= 0; i--) {
           if (pagosNormalizados[meses[i]]?.pagado) {
             ultimoMesPagado = meses[i];
@@ -146,19 +145,68 @@ export default function ListadoClientes() {
 
   const exportarExcel = () => {
     if (clientesFiltrados.length === 0) return Swal.fire('Tabla vacía', 'No hay clientes.', 'warning');
-    const datosFormateados = clientesFiltrados.map(c => ({
-      "Nros. de Rifa": c.nrosAsignados || '-',
-      "Nombre y Apellido": c.cliente,
-      "Teléfono": c.telefono,
-      "Vendedor": c.vendedor,
-      "¿Es Abonado?": c.esAbonado ? 'Sí' : 'No',
-      "Estado": c.activo ? 'Activo' : 'Baja',
-      "Último Mes Pago": c.ultimoMesPagado,
-      "Cuotas Pagas": `${c.cuotasPagas} de 12`,
-      "Deuda": c.tieneDeuda ? 'CON DEUDA / PAGO PARCIAL' : 'AL DÍA',
-      "Rendición Transf.": c.tieneTransferenciasPorRendir ? 'FALTA RENDIR' : 'OK'
-    }));
+
+    let recaudacionTotalExcel = 0;
+    let cantidadRifasActivas = 0;
+
+    const datosFormateados = clientesFiltrados.map(c => {
+      // Calculamos recaudación total por cliente exportado
+      Object.values(c.pagos).forEach(p => {
+        if (p.pagado) {
+          recaudacionTotalExcel += (Number(p.montoAbonado) || 0);
+        }
+      });
+
+      if (c.activo) {
+        cantidadRifasActivas += c.nrosAsignados.split(',').filter(n => n.trim() !== '').length || 1;
+      }
+
+      return {
+        "Nros. de Rifa": c.nrosAsignados || '-',
+        "Nombre y Apellido": c.cliente,
+        "Teléfono": c.telefono,
+        "Vendedor": c.vendedor,
+        "¿Es Abonado?": c.esAbonado ? 'Sí' : 'No',
+        "Estado": c.activo ? 'Activo' : 'Baja',
+        "Último Mes Pago": c.ultimoMesPagado,
+        "Cuotas Pagas": `${c.cuotasPagas} de 12`,
+        "Deuda": c.tieneDeuda ? 'CON DEUDA / PAGO PARCIAL' : 'AL DÍA',
+        "Rendición Transf.": c.tieneTransferenciasPorRendir ? 'FALTA RENDIR' : 'OK'
+      };
+    });
+
+    // Agregamos filas de resumen financiero al final del Excel
+    datosFormateados.push({});
+    datosFormateados.push({});
+    datosFormateados.push({
+      "Nros. de Rifa": "RESUMEN",
+      "Nombre y Apellido": "TOTALES DE ESTE INFORME:",
+      "Teléfono": "",
+      "Vendedor": "",
+      "¿Es Abonado?": "",
+      "Estado": `Clientes Totales: ${clientesFiltrados.length}`,
+      "Último Mes Pago": `Rifas Activas: ${cantidadRifasActivas}`,
+      "Cuotas Pagas": "RECAUDACIÓN:",
+      "Deuda": `$ ${recaudacionTotalExcel.toLocaleString('es-AR')}`,
+      "Rendición Transf.": ""
+    });
+
     const hoja = XLSX.utils.json_to_sheet(datosFormateados);
+
+    // Ajuste estético de anchos de columnas para Excel
+    hoja['!cols'] = [
+      { wch: 15 }, // Nros
+      { wch: 35 }, // Nombre
+      { wch: 15 }, // Telefono
+      { wch: 25 }, // Vendedor
+      { wch: 15 }, // Abonado
+      { wch: 12 }, // Estado
+      { wch: 18 }, // Ultimo Mes
+      { wch: 15 }, // Cuotas Pagas
+      { wch: 25 }, // Deuda
+      { wch: 20 }, // Rendicion
+    ];
+
     const libro = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(libro, hoja, "Clientes");
     XLSX.writeFile(libro, `Bomberos_Campaña_${campanaFiltro}.xlsx`);
@@ -180,7 +228,6 @@ export default function ListadoClientes() {
   const toggleEstadoCliente = async (cliente) => {
     const nuevoEstado = !cliente.activo;
     
-    // Alerta de Auditoría Visual si lo estamos dando de baja
     const htmlWarning = nuevoEstado 
       ? `Pasará a <b>Activo</b>. Los pagos anteriores se conservan.` 
       : `<div class="text-left mt-2">
@@ -349,7 +396,6 @@ export default function ListadoClientes() {
                       ) : (
                         <div className="flex flex-col items-center justify-center gap-1">
                           <span className="bg-gray-300 text-gray-700 px-3 py-1 rounded-full text-xs font-bold">Baja</span>
-                          {/* ETIQUETA VISUAL DEL ÚLTIMO PAGO */}
                           <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mt-1">Últ. pago: {cliente.ultimoMesPagado}</span>
                         </div>
                       )}

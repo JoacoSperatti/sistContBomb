@@ -14,6 +14,7 @@ import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { db } from "../firebase/config";
 import Swal from "sweetalert2";
 import logo from "../assets/Logo.png";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -49,7 +50,6 @@ export default function Home() {
     }
   };
 
-  // NUEVA FUNCIÓN: Generar números de rifa en la base de datos
   const handleGenerarRifas = async () => {
     const { value: maxNum } = await Swal.fire({
       title: 'Generar Base de Números',
@@ -69,7 +69,6 @@ export default function Home() {
         const total = Number(maxNum);
 
         for (let i = 0; i <= total; i++) {
-          // Guardamos con ID único: "2025-2026_1001"
           const docRef = doc(db, "rifas", `${campanaActiva}_${i}`); 
           batch.set(docRef, {
             numero: i.toString(),
@@ -79,7 +78,6 @@ export default function Home() {
           });
           
           count++;
-          // Firestore permite máximo 500 operaciones por batch
           if (count === 490) {
             await batch.commit();
             batch = writeBatch(db);
@@ -89,8 +87,7 @@ export default function Home() {
         if (count > 0) {
           await batch.commit();
         }
-        Swal.fire("¡Listo!", `Se generaron los números del 0 al ${total} exitosamente.`, "success");
-        // Recargar stats
+        Swal.fire("¡Listo!", `Se generaron los números del 0 al ${total}.`, "success");
         window.location.reload();
       } catch (error) {
         console.error("Error generando:", error);
@@ -118,7 +115,6 @@ export default function Home() {
             setPrecioBono(precioCuotaRef);
           }
 
-          // Consultar stats de socios
           const q = query(collection(db, "socios"), where("campana", "==", campanaActiva));
           const querySnapshot = await getDocs(q);
 
@@ -144,7 +140,6 @@ export default function Home() {
             }
           });
 
-          // Consultar total de rifas en la base
           const qRifas = query(collection(db, "rifas"), where("campana", "==", campanaActiva));
           const rifasSnap = await getDocs(qRifas);
 
@@ -161,6 +156,13 @@ export default function Home() {
 
     return () => unsubscribe();
   }, [campanaActiva, navigate]);
+
+  // Datos para el gráfico
+  const dataGrafico = [
+    { name: 'Vendidos', value: stats.vendidos },
+    { name: 'Disponibles', value: Math.max(0, stats.totalRifas - stats.vendidos) }
+  ];
+  const COLORS = ['#dc2626', '#e5e7eb'];
 
   return (
     <div className="flex h-screen bg-gray-100 font-sans">
@@ -212,14 +214,40 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="bg-gray-900 p-8 rounded-2xl shadow-xl flex items-center justify-between">
-               <div>
-                 <h2 className="text-white text-xl font-bold mb-1">Herramientas del Sistema</h2>
-                 <p className="text-gray-400 text-sm">Carga la base de números disponibles antes de empezar a vender.</p>
-               </div>
-               <button onClick={handleGenerarRifas} className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition transform hover:scale-105">
-                 🚀 Generar Base de Números
-               </button>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Gráfico Visual */}
+              <div className="bg-white p-8 rounded-2xl shadow-xl flex flex-col items-center">
+                 <h2 className="text-gray-800 text-xl font-bold mb-4 w-full text-left">Estado de Ocupación de Rifas</h2>
+                 {stats.totalRifas > 0 ? (
+                   <div className="w-full h-64">
+                     <ResponsiveContainer width="100%" height="100%">
+                       <PieChart>
+                         <Pie data={dataGrafico} cx="50%" cy="50%" innerRadius={70} outerRadius={100} paddingAngle={5} dataKey="value">
+                           {dataGrafico.map((entry, index) => (
+                             <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                           ))}
+                         </Pie>
+                         <Tooltip formatter={(value) => [`${value} números`, 'Cantidad']} />
+                         <Legend />
+                       </PieChart>
+                     </ResponsiveContainer>
+                   </div>
+                 ) : (
+                   <div className="h-64 flex items-center justify-center text-gray-400 italic">
+                     Aún no generaste la base de números.
+                   </div>
+                 )}
+              </div>
+
+              <div className="bg-gray-900 p-8 rounded-2xl shadow-xl flex flex-col justify-center">
+                 <div>
+                   <h2 className="text-white text-xl font-bold mb-2">Herramientas del Sistema</h2>
+                   <p className="text-gray-400 text-sm mb-6">Carga la base de números disponibles antes de empezar a vender para tener un control estricto de la campaña.</p>
+                 </div>
+                 <button onClick={handleGenerarRifas} className="bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-xl shadow-lg transition transform hover:scale-105 w-full text-center text-lg">
+                   🚀 Generar Base de Números
+                 </button>
+              </div>
             </div>
           </>
         )}
