@@ -50,48 +50,88 @@ export default function Home() {
     }
   };
 
+  // FUNCIÓN ACTUALIZADA: Contemplando el inicio en 0
   const handleGenerarRifas = async () => {
     const { value: maxNum } = await Swal.fire({
-      title: 'Generar Base de Números',
-      text: `¿Cuántos números se venden en la ${campanaActiva}? (Ej: 5000). Se crearán desde el 0 hasta el número que elijas.`,
+      title: 'Ajustar Base de Números',
+      text: `¿Qué cantidad TOTAL de números se venden en la ${campanaActiva}? (Ej: 5000). Como el primer cartón es el 0, el último será el ingresado menos uno.`,
       input: 'number',
       showCancelButton: true,
-      confirmButtonText: 'Generar Base',
+      confirmButtonText: 'Ajustar Base',
       cancelButtonText: 'Cancelar',
       confirmButtonColor: '#dc2626'
     });
 
-    if (maxNum && Number(maxNum) >= 0) {
+    if (maxNum && Number(maxNum) > 0) {
       setCargando(true);
       try {
+        const cantidadTotal = Number(maxNum);
+        const limiteSuperior = cantidadTotal - 1; // Si son 5000, termina en 4999
+        
+        const qRifas = query(collection(db, "rifas"), where("campana", "==", campanaActiva));
+        const rifasSnap = await getDocs(qRifas);
+        
+        const rifasExistentes = new Set();
         let batch = writeBatch(db);
         let count = 0;
-        const total = Number(maxNum);
+        let errorOcupado = false;
 
-        for (let i = 0; i <= total; i++) {
-          const docRef = doc(db, "rifas", `${campanaActiva}_${i}`); 
-          batch.set(docRef, {
-            numero: i.toString(),
-            estado: "disponible",
-            clienteId: null,
-            campana: campanaActiva
-          });
-          
-          count++;
-          if (count === 490) {
-            await batch.commit();
-            batch = writeBatch(db);
-            count = 0;
+        rifasSnap.forEach(docSnap => {
+          const data = docSnap.data();
+          const num = Number(data.numero);
+          rifasExistentes.add(num);
+
+          // Si el número es mayor al límite superior, lo intentamos borrar
+          if (num > limiteSuperior) {
+            if (data.estado !== 'disponible') {
+              errorOcupado = true; 
+            } else {
+              batch.delete(docSnap.ref);
+              count++;
+            }
+          }
+        });
+
+        if (errorOcupado) {
+          Swal.fire("Error de Seguridad", `No se puede achicar la base a ${cantidadTotal} números. Hay rifas mayores al ${limiteSuperior} que YA ESTÁN VENDIDAS. Por favor, quitalas de los clientes primero.`, "error");
+          setCargando(false);
+          return;
+        }
+
+        if (count > 0) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+
+        for (let i = 0; i <= limiteSuperior; i++) {
+          if (!rifasExistentes.has(i)) {
+            const docRef = doc(db, "rifas", `${campanaActiva}_${i}`); 
+            batch.set(docRef, {
+              numero: i.toString(),
+              estado: "disponible",
+              clienteId: null,
+              campana: campanaActiva
+            });
+            
+            count++;
+            if (count === 490) {
+              await batch.commit();
+              batch = writeBatch(db);
+              count = 0;
+            }
           }
         }
+        
         if (count > 0) {
           await batch.commit();
         }
-        Swal.fire("¡Listo!", `Se generaron los números del 0 al ${total}.`, "success");
+        
+        Swal.fire("¡Listo!", `La base se ajustó correctamente. Son ${cantidadTotal} números en total (del 0 al ${limiteSuperior}).`, "success");
         window.location.reload();
       } catch (error) {
-        console.error("Error generando:", error);
-        Swal.fire("Error", "Hubo un problema al generar los números.", "error");
+        console.error("Error ajustando:", error);
+        Swal.fire("Error", "Hubo un problema al procesar los números.", "error");
       } finally {
         setCargando(false);
       }
@@ -157,7 +197,6 @@ export default function Home() {
     return () => unsubscribe();
   }, [campanaActiva, navigate]);
 
-  // Datos para el gráfico
   const dataGrafico = [
     { name: 'Vendidos', value: stats.vendidos },
     { name: 'Disponibles', value: Math.max(0, stats.totalRifas - stats.vendidos) }
@@ -215,7 +254,6 @@ export default function Home() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Gráfico Visual */}
               <div className="bg-white p-8 rounded-2xl shadow-xl flex flex-col items-center">
                  <h2 className="text-gray-800 text-xl font-bold mb-4 w-full text-left">Estado de Ocupación de Rifas</h2>
                  {stats.totalRifas > 0 ? (
@@ -242,10 +280,10 @@ export default function Home() {
               <div className="bg-gray-900 p-8 rounded-2xl shadow-xl flex flex-col justify-center">
                  <div>
                    <h2 className="text-white text-xl font-bold mb-2">Herramientas del Sistema</h2>
-                   <p className="text-gray-400 text-sm mb-6">Carga la base de números disponibles antes de empezar a vender para tener un control estricto de la campaña.</p>
+                   <p className="text-gray-400 text-sm mb-6">Carga la base de números disponibles antes de empezar a vender. Podés agrandar o achicar la base en cualquier momento sin perder los datos ya cargados.</p>
                  </div>
                  <button onClick={handleGenerarRifas} className="bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-xl shadow-lg transition transform hover:scale-105 w-full text-center text-lg">
-                   🚀 Generar Base de Números
+                   ⚙️ Ajustar Base de Números
                  </button>
               </div>
             </div>
