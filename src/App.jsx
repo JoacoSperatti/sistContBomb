@@ -2,7 +2,8 @@ import { HashRouter, Routes, Route } from 'react-router-dom';
 import Login from './pages/Login';
 import Home from './pages/Home';
 import CargarClientes from './pages/CargarClientes';
-import ListadoClientes from './pages/ListadoClientes'; 
+import ListadoClientes from './pages/ListadoClientes';
+import Vendedores from './pages/Vendedores'; 
 
 function App() {
   return (
@@ -11,7 +12,8 @@ function App() {
         <Route path="/" element={<Login />} />
         <Route path="/home" element={<Home />} />
         <Route path="/cargar-clientes" element={<CargarClientes />} />
-        <Route path="/lista-clientes" element={<ListadoClientes />} /> 
+        <Route path="/lista-clientes" element={<ListadoClientes />} />
+        <Route path="/vendedores" element={<Vendedores />} /> 
         <Route path="*" element={<Login />} />
       </Routes>
     </HashRouter>

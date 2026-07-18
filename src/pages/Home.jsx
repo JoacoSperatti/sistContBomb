@@ -23,10 +23,12 @@ export default function Home() {
     { id: "2025-2026", nombre: "Campaña 2025-2026" },
     { id: "2026-2027", nombre: "Campaña 2026-2027" },
   ]);
-  const [campanaActiva, setCampanaActiva] = useState("2025-2026");
+  const [campanaActiva, setCampanaActiva] = useState(localStorage.getItem('campanaDefecto') || "2025-2026");
 
   const [precioBono, setPrecioBono] = useState(120000);
   const [stats, setStats] = useState({ vendidos: 0, recaudado: 0, totalRifas: 0 });
+  const [rifasData, setRifasData] = useState([]);
+  const [mostrarModalNumeros, setMostrarModalNumeros] = useState(false);
   const [cargando, setCargando] = useState(true);
 
   const handleEditarPrecio = async () => {
@@ -182,6 +184,10 @@ export default function Home() {
 
           const qRifas = query(collection(db, "rifas"), where("campana", "==", campanaActiva));
           const rifasSnap = await getDocs(qRifas);
+          
+          const rifasArray = rifasSnap.docs.map(doc => doc.data());
+          rifasArray.sort((a, b) => a.numero - b.numero);
+          setRifasData(rifasArray);
 
           setStats({ vendidos: totalVendidos, recaudado: totalRecaudado, totalRifas: rifasSnap.size });
         } catch (error) {
@@ -213,6 +219,7 @@ export default function Home() {
           <button className="bg-red-600 text-white py-2 px-4 rounded-lg font-semibold text-left shadow-md">🏠 Tablero Inicio</button>
           <button onClick={() => navigate("/cargar-clientes")} className="bg-transparent text-gray-300 hover:text-white hover:bg-gray-800 py-2 px-4 rounded-lg font-semibold text-left transition">👥 Cargar Clientes</button>
           <button onClick={() => navigate("/lista-clientes")} className="bg-transparent text-gray-300 hover:text-white hover:bg-gray-800 py-2 px-4 rounded-lg font-semibold text-left transition">📋 Lista de Clientes</button>
+          <button onClick={() => navigate("/vendedores")} className="bg-transparent text-gray-300 hover:text-white hover:bg-gray-800 py-2 px-4 rounded-lg font-semibold text-left transition">🏷️ Vendedores</button>
         </nav>
         <div className="mt-auto w-full px-4">
           <button onClick={() => navigate("/")} className="w-full text-sm text-gray-400 hover:text-white transition flex items-center justify-center gap-2"><span>🚪</span> Cerrar Sesión</button>
@@ -227,7 +234,7 @@ export default function Home() {
           </div>
           <div className="flex items-center space-x-4 bg-white p-2 rounded-lg shadow-sm border border-gray-200">
             <label className="text-gray-700 font-bold text-sm uppercase">Campaña:</label>
-            <select className="bg-transparent text-gray-800 font-semibold focus:outline-none cursor-pointer" value={campanaActiva} onChange={(e) => setCampanaActiva(e.target.value)}>
+            <select className="bg-transparent text-gray-800 font-semibold focus:outline-none cursor-pointer" value={campanaActiva} onChange={(e) => { setCampanaActiva(e.target.value); localStorage.setItem('campanaDefecto', e.target.value); }}>
               {campanas.map((c) => (<option key={c.id} value={c.id}>{c.nombre}</option>))}
             </select>
           </div>
@@ -257,6 +264,7 @@ export default function Home() {
               <div className="bg-white p-8 rounded-2xl shadow-xl flex flex-col items-center">
                  <h2 className="text-gray-800 text-xl font-bold mb-4 w-full text-left">Estado de Ocupación de Rifas</h2>
                  {stats.totalRifas > 0 ? (
+                   <>
                    <div className="w-full h-64">
                      <ResponsiveContainer width="100%" height="100%">
                        <PieChart>
@@ -270,6 +278,8 @@ export default function Home() {
                        </PieChart>
                      </ResponsiveContainer>
                    </div>
+                   <button onClick={() => setMostrarModalNumeros(true)} className="mt-4 bg-indigo-600 text-white py-2 px-6 rounded-lg font-bold hover:bg-indigo-700 transition shadow">Ver Todos los Números</button>
+                   </>
                  ) : (
                    <div className="h-64 flex items-center justify-center text-gray-400 italic">
                      Aún no generaste la base de números.
@@ -288,6 +298,27 @@ export default function Home() {
               </div>
             </div>
           </>
+        )}
+        {mostrarModalNumeros && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+            <div className="bg-white p-6 rounded-2xl w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold text-gray-800">Detalle de Numeración</h2>
+                <button onClick={() => setMostrarModalNumeros(false)} className="text-gray-500 hover:text-red-500 text-xl font-bold p-2 bg-gray-100 rounded-full w-10 h-10 flex items-center justify-center transition">✕</button>
+              </div>
+              <div className="flex-1 overflow-y-auto pr-2 grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-2">
+                {rifasData.map(rifa => (
+                  <div key={rifa.numero} className={`p-2 rounded font-bold text-center border text-sm ${rifa.estado !== 'disponible' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'}`}>
+                    {rifa.numero}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex gap-4 text-sm font-bold justify-center bg-gray-50 p-3 rounded-lg border">
+                <div className="flex items-center gap-2"><span className="w-4 h-4 bg-green-100 border border-green-300 rounded"></span> Libre</div>
+                <div className="flex items-center gap-2"><span className="w-4 h-4 bg-red-100 border border-red-300 rounded"></span> Vendido</div>
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>

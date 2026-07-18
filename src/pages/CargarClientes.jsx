@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { collection, addDoc, serverTimestamp, doc, getDoc, updateDoc } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp, doc, getDoc, updateDoc, getDocs, query } from "firebase/firestore";
 import { db } from "../firebase/config";
 import Swal from "sweetalert2";
 
@@ -8,7 +8,7 @@ export default function CargarClientes() {
   const navigate = useNavigate();
 
   const estadoInicialForm = {
-    cliente: "", vendedor: "", correo: "", campana: "2025-2026",
+    cliente: "", vendedor: "", correo: "", campana: localStorage.getItem("campanaDefecto") || "2025-2026",
     telefono: "", domicilio: "", metodoPago: "", esAbonado: false,
   };
 
@@ -19,8 +19,18 @@ export default function CargarClientes() {
   // NUEVO: Estados para los números de rifa
   const [numerosSeleccionados, setNumerosSeleccionados] = useState([]);
   const [numeroBuscado, setNumeroBuscado] = useState('');
+  const [vendedoresOptions, setVendedoresOptions] = useState([]);
 
-  const meses = ["Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio"];
+  useEffect(() => {
+    const fetchVendedores = async () => {
+      const q = query(collection(db, "vendedores"));
+      const snap = await getDocs(q);
+      setVendedoresOptions(snap.docs.map(doc => doc.data().nombre).sort());
+    };
+    fetchVendedores();
+  }, []);
+
+  const meses = ["Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio (Fin)", "Agosto (Fin)"];
 
   const [pagos, setPagos] = useState(
     meses.reduce((acc, mes) => ({ ...acc, [mes]: { pagado: false, metodoPago: "", montoAbonado: 0, montoEfectivo: 0, montoTransferencia: 0 } }), {})
@@ -37,6 +47,7 @@ export default function CargarClientes() {
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
+    if (name === "campana") localStorage.setItem("campanaDefecto", value);
     setFormData({ ...formData, [name]: type === "checkbox" ? checked : value });
   };
 
@@ -166,7 +177,8 @@ export default function CargarClientes() {
       setFormData(estadoInicialForm);
       setNumerosSeleccionados([]);
       setPagos(meses.reduce((acc, mes) => ({ ...acc, [mes]: { pagado: false, metodoPago: "", montoAbonado: 0, montoEfectivo: 0, montoTransferencia: 0 } }), {}));
-    } catch (error) {
+    } catch (e) {
+      console.error(e);
       Swal.fire({ icon: "error", title: "Error", text: "Problema al guardar.", confirmButtonColor: "#dc2626" });
     } finally { setCargando(false); }
   };
@@ -249,22 +261,9 @@ export default function CargarClientes() {
                   <div>
                     <label className="block text-sm font-bold text-gray-700 mb-1">Vendedor *</label>
                     <select name="vendedor" value={formData.vendedor} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" onChange={handleInputChange}>
-                      <option value="">Seleccione...</option>
-                      <option value="Gaitan Victor Adrian">Gaitan Victor Adrian</option>
-                      <option value="Tufarelli Nestor Dario">Tufarelli Nestor Dario</option>
-                      <option value="Stein Cacho Roberto">Stein Cacho Roberto</option>
-                      <option value="Jalup Marcelo Adrian">Jalup Marcelo Adrian</option>
-                      <option value="Di Puglia Pugliese Juan Manuel">Di Puglia Pugliese Juan Manuel</option>
-                      <option value="Sosa Esteban Daniel">Sosa Esteban Daniel</option>
-                      <option value="Curvelo Alba Rodolfo">Curvelo Alba Rodolfo</option>
-                      <option value="Ruiz Oscar Eduardo">Ruiz Oscar Eduardo</option>
-                      <option value="Turfarelli Arzamendia">Turfarelli Arzamendia</option>
-                      <option value="Arzamendia Daniel Edgardo">Arzamendia Daniel Edgardo</option>
-                      <option value="Tomalino Maximiliano">Tomalino Maximiliano</option>
-                      <option value="Puyol Juan Carlos">Puyol Juan Carlos</option>
-                      <option value="Calibar Victor">Calibar Victor</option>
-                      <option value="Facundo Benitez">Facundo Benitez</option>
-                    </select>
+  <option value="">Seleccione...</option>
+  {vendedoresOptions.map(v => <option key={v} value={v}>{v}</option>)}
+</select>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">

@@ -10,7 +10,7 @@ export default function ListadoClientes() {
   const navigate = useNavigate();
   const [clientes, setClientes] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [campanaFiltro, setCampanaFiltro] = useState('2025-2026');
+  const [campanaFiltro, setCampanaFiltro] = useState(localStorage.getItem('campanaDefecto') || '2025-2026');
   const [busqueda, setBusqueda] = useState('');
   
   const [precioCuotaLocal, setPrecioCuotaLocal] = useState(120000);
@@ -18,11 +18,21 @@ export default function ListadoClientes() {
   const [clienteEditando, setClienteEditando] = useState(null);
   const [pagosTemp, setPagosTemp] = useState({});
   const [guardandoPago, setGuardandoPago] = useState(false);
+  const [vendedoresOptions, setVendedoresOptions] = useState([]);
+
+  useEffect(() => {
+    const fetchVendedores = async () => {
+      const q = query(collection(db, "vendedores"));
+      const snap = await getDocs(q);
+      setVendedoresOptions(snap.docs.map(doc => doc.data().nombre).sort());
+    };
+    fetchVendedores();
+  }, []);
 
   const [editandoInfo, setEditandoInfo] = useState(null);
   const [infoTemp, setInfoTemp] = useState({});
 
-  const meses = ['Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio'];
+  const meses = ['Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio (Fin)', 'Agosto (Fin)'];
 
   const fetchClientes = async () => {
     setCargando(true);
@@ -135,6 +145,7 @@ export default function ListadoClientes() {
       else navigate('/');
     });
     return () => unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campanaFiltro, navigate]);
 
   const clientesFiltrados = clientes.filter(c => 
@@ -150,7 +161,6 @@ export default function ListadoClientes() {
     let cantidadRifasActivas = 0;
 
     const datosFormateados = clientesFiltrados.map(c => {
-      // Calculamos recaudación total por cliente exportado
       Object.values(c.pagos).forEach(p => {
         if (p.pagado) {
           recaudacionTotalExcel += (Number(p.montoAbonado) || 0);
@@ -175,7 +185,6 @@ export default function ListadoClientes() {
       };
     });
 
-    // Agregamos filas de resumen financiero al final del Excel
     datosFormateados.push({});
     datosFormateados.push({});
     datosFormateados.push({
@@ -193,18 +202,17 @@ export default function ListadoClientes() {
 
     const hoja = XLSX.utils.json_to_sheet(datosFormateados);
 
-    // Ajuste estético de anchos de columnas para Excel
     hoja['!cols'] = [
-      { wch: 15 }, // Nros
-      { wch: 35 }, // Nombre
-      { wch: 15 }, // Telefono
-      { wch: 25 }, // Vendedor
-      { wch: 15 }, // Abonado
-      { wch: 12 }, // Estado
-      { wch: 18 }, // Ultimo Mes
-      { wch: 15 }, // Cuotas Pagas
-      { wch: 25 }, // Deuda
-      { wch: 20 }, // Rendicion
+      { wch: 15 }, 
+      { wch: 35 }, 
+      { wch: 15 }, 
+      { wch: 25 }, 
+      { wch: 15 }, 
+      { wch: 12 }, 
+      { wch: 18 }, 
+      { wch: 15 }, 
+      { wch: 25 }, 
+      { wch: 20 }, 
     ];
 
     const libro = XLSX.utils.book_new();
@@ -212,16 +220,25 @@ export default function ListadoClientes() {
     XLSX.writeFile(libro, `Bomberos_Campaña_${campanaFiltro}.xlsx`);
   };
 
-  const eliminarCliente = async (id, nombre) => {
+  const eliminarCliente = async (cliente) => {
     const { isConfirmed } = await Swal.fire({
-      title: `¿Eliminar a ${nombre} DEFINITIVAMENTE?`,
+      title: `¿Eliminar a ${cliente.cliente} DEFINITIVAMENTE?`,
       text: "Se borrará todo su historial y restará plata de la caja. Si solo querés pausarlo, usá el botón de Baja.",
       icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Sí, eliminar'
     });
     if (isConfirmed) {
-      await deleteDoc(doc(db, 'socios', id));
-      setClientes(clientes.filter(c => c.id !== id));
-      Swal.fire('Eliminado', 'Cliente borrado.', 'success');
+      if (cliente.nrosAsignados) {
+        const numeros = cliente.nrosAsignados.split(',').map(n => n.trim()).filter(n => n !== '');
+        for (const num of numeros) {
+          const rifaRef = doc(db, "rifas", `${cliente.campana || campanaFiltro}_${num}`);
+          try {
+            await updateDoc(rifaRef, { estado: 'disponible', clienteId: null });
+          } catch(e) { console.error('Error liberando número', num, e); }
+        }
+      }
+      await deleteDoc(doc(db, 'socios', cliente.id));
+      setClientes(clientes.filter(c => c.id !== cliente.id));
+      Swal.fire('Eliminado', 'Cliente borrado y números liberados.', 'success');
     }
   };
 
@@ -261,6 +278,97 @@ export default function ListadoClientes() {
       vendedor: cliente.vendedor || '', esAbonado: cliente.esAbonado || false, 
       nrosRifa: cliente.nrosAsignados || '', metodoPago: cliente.metodoPago || ''
     });
+  };
+
+  const agregarNumeroACliente = async (numero) => {
+    const numTrim = numero.trim();
+    if (!numTrim) return;
+    
+    let actuales = infoTemp.nrosRifa ? infoTemp.nrosRifa.split(',').map(n => n.trim()).filter(n => n !== '') : [];
+    if (actuales.includes(numTrim)) {
+      Swal.fire('Atención', 'El cliente ya tiene este número.', 'info');
+      return;
+    }
+
+    try {
+      const campanaActual = editandoInfo.campana || campanaFiltro;
+      const rifaRef = doc(db, "rifas", `${campanaActual}_${numTrim}`);
+      const rifaSnap = await getDoc(rifaRef);
+
+      if (!rifaSnap.exists()) {
+        Swal.fire('Error', `El número ${numTrim} no existe en la base.`, 'error');
+        return;
+      }
+      if (rifaSnap.data().estado !== 'disponible') {
+        Swal.fire('Ocupado', `El número ${numTrim} ya está asignado.`, 'warning');
+        return;
+      }
+
+      await updateDoc(rifaRef, { estado: 'asignado', clienteId: editandoInfo.id });
+      
+      actuales.push(numTrim);
+      const nuevosNumeros = actuales.join(', ');
+      setInfoTemp({ ...infoTemp, nrosRifa: nuevosNumeros });
+      
+      await updateDoc(doc(db, 'socios', editandoInfo.id), { nrosRifa: nuevosNumeros });
+      
+      setClientes(clientes.map(c => c.id === editandoInfo.id ? { ...c, nrosAsignados: nuevosNumeros } : c));
+
+      setTimeout(() => {
+        const chip = document.getElementById(`chip-${numTrim}`);
+        if(chip) {
+           chip.classList.remove('bg-blue-100', 'text-blue-800', 'border-blue-200');
+           chip.classList.add('bg-green-100', 'text-green-800', 'border-green-500');
+           setTimeout(() => {
+             chip.classList.remove('bg-green-100', 'text-green-800', 'border-green-500');
+             chip.classList.add('bg-blue-100', 'text-blue-800', 'border-blue-200');
+           }, 800);
+        }
+      }, 50);
+
+    } catch (error) {
+      console.error(error);
+      Swal.fire('Error', 'Problema al agregar número.', 'error');
+    }
+  };
+
+  const quitarNumeroDeCliente = async (numero) => {
+    const numTrim = numero.trim();
+    const { isConfirmed } = await Swal.fire({
+      title: `¿Quitar número ${numTrim}?`,
+      text: "Quedará disponible instantáneamente para otros clientes.",
+      icon: 'question', showCancelButton: true, confirmButtonText: 'Sí, quitar'
+    });
+
+    if (isConfirmed) {
+      try {
+        const campanaActual = editandoInfo.campana || campanaFiltro;
+        const rifaRef = doc(db, "rifas", `${campanaActual}_${numTrim}`);
+        
+        const chip = document.getElementById(`chip-${numTrim}`);
+        if(chip) {
+           chip.classList.remove('bg-blue-100', 'text-blue-800', 'border-blue-200');
+           chip.classList.add('bg-red-100', 'text-red-800', 'border-red-500');
+        }
+
+        await updateDoc(rifaRef, { estado: 'disponible', clienteId: null });
+        
+        let actuales = infoTemp.nrosRifa ? infoTemp.nrosRifa.split(',').map(n => n.trim()).filter(n => n !== '' && n !== numTrim) : [];
+        const nuevosNumeros = actuales.join(', ');
+        
+        setTimeout(() => {
+          setInfoTemp({ ...infoTemp, nrosRifa: nuevosNumeros });
+        }, 400);
+        
+        await updateDoc(doc(db, 'socios', editandoInfo.id), { nrosRifa: nuevosNumeros });
+        
+        setClientes(clientes.map(c => c.id === editandoInfo.id ? { ...c, nrosAsignados: nuevosNumeros } : c));
+
+      } catch (error) {
+        console.error(error);
+        Swal.fire('Error', 'Problema al quitar número.', 'error');
+      }
+    }
   };
 
   const guardarCambiosInfo = async () => {
@@ -358,7 +466,7 @@ export default function ListadoClientes() {
         </div>
         <div className="flex items-center gap-4 w-full md:w-auto">
           <input type="text" placeholder="🔍 Buscar nombre, nro o tel..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} className="px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 w-full md:w-64" />
-          <select value={campanaFiltro} onChange={(e) => setCampanaFiltro(e.target.value)} className="px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-bold bg-white hidden sm:block">
+          <select value={campanaFiltro} onChange={(e) => { setCampanaFiltro(e.target.value); localStorage.setItem('campanaDefecto', e.target.value); }} className="px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-bold bg-white hidden sm:block">
             <option value="2025-2026">2025-2026</option>
             <option value="2026-2027">2026-2027</option>
           </select>
@@ -421,7 +529,7 @@ export default function ListadoClientes() {
                       <button onClick={() => toggleEstadoCliente(cliente)} className={`font-bold py-1 px-2 rounded transition shadow-sm border ${cliente.activo ? 'bg-orange-100 text-orange-700 border-orange-200 hover:bg-orange-200' : 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200'}`} title={cliente.activo ? "Dar de Baja Lógica" : "Reactivar Cliente"}>{cliente.activo ? '⏸️' : '▶️'}</button>
                       <button onClick={() => abrirEditorPagos(cliente)} className="bg-blue-100 text-blue-700 hover:bg-blue-200 font-bold py-1 px-2 rounded transition shadow-sm border border-blue-200" title="Editar Pagos">✏️</button>
                       <button onClick={() => abrirEditorInfo(cliente)} className="bg-gray-100 text-gray-700 hover:bg-gray-200 font-bold py-1 px-2 rounded transition shadow-sm border border-gray-300" title="Editar Info Personal">⚙️</button>
-                      <button onClick={() => eliminarCliente(cliente.id, cliente.cliente)} className="bg-red-100 text-red-700 hover:bg-red-200 font-bold py-1 px-2 rounded transition shadow-sm border border-red-200" title="Eliminar Definitivamente">🗑️</button>
+                      <button onClick={() => eliminarCliente(cliente)} className="bg-red-100 text-red-700 hover:bg-red-200 font-bold py-1 px-2 rounded transition shadow-sm border border-red-200" title="Eliminar Definitivamente">🗑️</button>
                     </td>
                   </tr>
                 ))
@@ -483,7 +591,48 @@ export default function ListadoClientes() {
             </div>
             <div className="p-6 space-y-4">
               <div><label className="block text-sm font-bold text-gray-700 mb-1">Nombre y Apellido</label><input type="text" value={infoTemp.cliente} onChange={e => setInfoTemp({...infoTemp, cliente: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" /></div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1">Números Asignados (separados por coma)</label><input type="text" value={infoTemp.nrosRifa} onChange={e => setInfoTemp({...infoTemp, nrosRifa: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" /></div>
+              
+              <div className="bg-gray-50 p-4 border rounded-lg shadow-sm">
+                <label className="block text-sm font-bold text-blue-700 mb-2">Números Asignados (Se guardan automáticamente)</label>
+                <div className="flex gap-2 mb-3">
+                  <input 
+                    type="number" 
+                    id="inputNuevoNumero"
+                    placeholder="Agregar número..." 
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" 
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        agregarNumeroACliente(e.target.value);
+                        e.target.value = '';
+                      }
+                    }}
+                  />
+                  <button type="button" onClick={() => {
+                    const input = document.getElementById('inputNuevoNumero');
+                    agregarNumeroACliente(input.value);
+                    input.value = '';
+                  }} className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-lg transition">
+                    Agregar
+                  </button>
+                </div>
+                
+                <div className="flex flex-wrap gap-2">
+                  {infoTemp.nrosRifa && infoTemp.nrosRifa.split(',').filter(n => n.trim() !== '').map(num => {
+                    const numStr = num.trim();
+                    return (
+                      <span key={numStr} id={`chip-${numStr}`} className="bg-blue-100 text-blue-800 border border-blue-200 px-3 py-1 rounded-full text-sm font-bold flex items-center gap-2 shadow-sm transition-colors duration-300">
+                        {numStr} 
+                        <button type="button" onClick={() => quitarNumeroDeCliente(numStr)} className="text-blue-500 hover:text-red-500 font-black">×</button>
+                      </span>
+                    );
+                  })}
+                  {(!infoTemp.nrosRifa || infoTemp.nrosRifa.trim() === '') && (
+                    <span className="text-sm text-gray-500 italic">No tiene números asignados</span>
+                  )}
+                </div>
+              </div>
+
               <div><label className="block text-sm font-bold text-gray-700 mb-1">Teléfono</label><input type="text" value={infoTemp.telefono} onChange={e => setInfoTemp({...infoTemp, telefono: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" /></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1">Domicilio</label><input type="text" value={infoTemp.domicilio} onChange={e => setInfoTemp({...infoTemp, domicilio: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none" /></div>
               <div className="grid grid-cols-2 gap-4">
@@ -491,8 +640,7 @@ export default function ListadoClientes() {
                   <label className="block text-sm font-bold text-gray-700 mb-1">Vendedor</label>
                   <select value={infoTemp.vendedor} onChange={e => setInfoTemp({...infoTemp, vendedor: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
                     <option value="">Seleccione...</option>
-                    <option value="Gaitan Victor Adrian">Gaitan Victor Adrian</option>
-                    <option value="Tufarelli Nestor Dario">Tufarelli Nestor Dario</option>
+                    {vendedoresOptions.map(v => <option key={v} value={v}>{v}</option>)}
                   </select>
                 </div>
                 <div>
